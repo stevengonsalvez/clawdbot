@@ -1,12 +1,12 @@
 import type { App } from "@slack/bolt";
 import { describe, expect, it } from "vitest";
 
-import type { ClawdbotConfig } from "../../config/config.js";
+import type { MoltbotConfig } from "../../config/config.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { createSlackMonitorContext, normalizeSlackChannelType } from "./context.js";
 
 const baseParams = () => ({
-  cfg: {} as ClawdbotConfig,
+  cfg: {} as MoltbotConfig,
   accountId: "default",
   botToken: "token",
   app: { client: {} } as App,
@@ -56,7 +56,7 @@ describe("resolveSlackSystemEventSessionKey", () => {
   it("defaults missing channel_type to channel sessions", () => {
     const ctx = createSlackMonitorContext(baseParams());
     expect(ctx.resolveSlackSystemEventSessionKey({ channelId: "C123" })).toBe(
-      "agent:main:slack:channel:C123",
+      "agent:main:slack:channel:c123",
     );
   });
 });

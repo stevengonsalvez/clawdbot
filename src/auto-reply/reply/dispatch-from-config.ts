@@ -1,5 +1,14 @@
-import type { ClawdbotConfig } from "../../config/config.js";
+import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { createDefaultDeps } from "../../cli/deps.js";
+import type { MoltbotConfig } from "../../config/config.js";
+import { loadSessionStore, resolveStorePath } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
+import { logWarn } from "../../logger.js";
+import { createInternalHookEvent, triggerInternalHook } from "../../hooks/hooks.js";
+import type { MessageReceivedHookContext } from "../../hooks/internal-hooks.js";
+import { matchMessageHandler } from "../../hooks/message-handler-match.js";
+import { isHandlerRateLimited } from "../../hooks/message-handler-rate-limit.js";
+import { runMessageHandler } from "../../hooks/message-handler-run.js";
 import { isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import {
   logMessageProcessed,
@@ -14,16 +23,68 @@ import { formatAbortReplyText, tryFastAbortFromMessage } from "./abort.js";
 import { shouldSkipDuplicateInbound } from "./inbound-dedupe.js";
 import type { ReplyDispatcher, ReplyDispatchKind } from "./reply-dispatcher.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
-import { maybeApplyTtsToPayload } from "../../tts/tts.js";
+import { maybeApplyTtsToPayload, normalizeTtsAutoMode, resolveTtsConfig } from "../../tts/tts.js";
+
+const AUDIO_PLACEHOLDER_RE = /^<media:audio>(\s*\([^)]*\))?$/i;
+const AUDIO_HEADER_RE = /^\[Audio\b/i;
+
+const normalizeMediaType = (value: string): string => value.split(";")[0]?.trim().toLowerCase();
+
+const isInboundAudioContext = (ctx: FinalizedMsgContext): boolean => {
+  const rawTypes = [
+    typeof ctx.MediaType === "string" ? ctx.MediaType : undefined,
+    ...(Array.isArray(ctx.MediaTypes) ? ctx.MediaTypes : []),
+  ].filter(Boolean) as string[];
+  const types = rawTypes.map((type) => normalizeMediaType(type));
+  if (types.some((type) => type === "audio" || type.startsWith("audio/"))) return true;
+
+  const body =
+    typeof ctx.BodyForCommands === "string"
+      ? ctx.BodyForCommands
+      : typeof ctx.CommandBody === "string"
+        ? ctx.CommandBody
+        : typeof ctx.RawBody === "string"
+          ? ctx.RawBody
+          : typeof ctx.Body === "string"
+            ? ctx.Body
+            : "";
+  const trimmed = body.trim();
+  if (!trimmed) return false;
+  if (AUDIO_PLACEHOLDER_RE.test(trimmed)) return true;
+  return AUDIO_HEADER_RE.test(trimmed);
+};
+
+const resolveSessionTtsAuto = (
+  ctx: FinalizedMsgContext,
+  cfg: MoltbotConfig,
+): string | undefined => {
+  const targetSessionKey =
+    ctx.CommandSource === "native" ? ctx.CommandTargetSessionKey?.trim() : undefined;
+  const sessionKey = (targetSessionKey ?? ctx.SessionKey)?.trim();
+  if (!sessionKey) return undefined;
+  const agentId = resolveSessionAgentId({ sessionKey, config: cfg });
+  const storePath = resolveStorePath(cfg.session?.store, { agentId });
+  try {
+    const store = loadSessionStore(storePath);
+    const entry = store[sessionKey.toLowerCase()] ?? store[sessionKey];
+    return normalizeTtsAutoMode(entry?.ttsAuto);
+  } catch {
+    return undefined;
+  }
+};
 
 export type DispatchFromConfigResult = {
   queuedFinal: boolean;
   counts: Record<ReplyDispatchKind, number>;
+  /** Set when a message handler took over processing */
+  handledByMessageHandler?: {
+    handlerId: string;
+  };
 };
 
 export async function dispatchReplyFromConfig(params: {
   ctx: FinalizedMsgContext;
-  cfg: ClawdbotConfig;
+  cfg: MoltbotConfig;
   dispatcher: ReplyDispatcher;
   replyOptions?: Omit<GetReplyOptions, "onToolResult" | "onBlockReply">;
   replyResolver?: typeof getReplyFromConfig;
@@ -81,6 +142,8 @@ export async function dispatchReplyFromConfig(params: {
     return { queuedFinal: false, counts: dispatcher.getQueuedCounts() };
   }
 
+  const inboundAudio = isInboundAudioContext(ctx);
+  const sessionTtsAuto = resolveSessionTtsAuto(ctx, cfg);
   const hookRunner = getGlobalHookRunner();
   if (hookRunner?.hasHooks("message_received")) {
     const timestamp =
@@ -131,6 +194,117 @@ export async function dispatchReplyFromConfig(params: {
       });
   }
 
+  // Trigger internal message:received hook (for user hooks in ~/.clawdbot/hooks/)
+  // Fire-and-forget: don't await, errors logged internally by triggerInternalHook
+  {
+    const timestamp =
+      typeof ctx.Timestamp === "number" && Number.isFinite(ctx.Timestamp)
+        ? ctx.Timestamp
+        : undefined;
+    const messageIdForHook =
+      ctx.MessageSidFull ?? ctx.MessageSid ?? ctx.MessageSidFirst ?? ctx.MessageSidLast;
+    const content =
+      typeof ctx.BodyForCommands === "string"
+        ? ctx.BodyForCommands
+        : typeof ctx.RawBody === "string"
+          ? ctx.RawBody
+          : typeof ctx.Body === "string"
+            ? ctx.Body
+            : "";
+    const channelId = (ctx.OriginatingChannel ?? ctx.Surface ?? ctx.Provider ?? "").toLowerCase();
+    const conversationId = ctx.OriginatingTo ?? ctx.To ?? ctx.From ?? undefined;
+
+    void triggerInternalHook(
+      createInternalHookEvent("message", "received", sessionKey ?? "", {
+        from: ctx.From ?? "",
+        content,
+        timestamp,
+        channelId,
+        accountId: ctx.AccountId,
+        conversationId,
+        metadata: {
+          to: ctx.To,
+          provider: ctx.Provider,
+          surface: ctx.Surface,
+          threadId: ctx.MessageThreadId,
+          originatingChannel: ctx.OriginatingChannel,
+          originatingTo: ctx.OriginatingTo,
+          messageId: messageIdForHook,
+          senderId: ctx.SenderId,
+          senderName: ctx.SenderName,
+          senderUsername: ctx.SenderUsername,
+          senderE164: ctx.SenderE164,
+        },
+      }),
+    );
+
+    // Check for config-driven message handlers
+    const messageHandlers = cfg.hooks?.internal?.messageHandlers ?? [];
+    if (messageHandlers.length > 0) {
+      const handlerContext: MessageReceivedHookContext = {
+        from: ctx.From ?? "",
+        content,
+        timestamp,
+        channelId,
+        accountId: ctx.AccountId,
+        conversationId,
+        metadata: {
+          to: ctx.To,
+          provider: ctx.Provider,
+          surface: ctx.Surface,
+          threadId: ctx.MessageThreadId != null ? String(ctx.MessageThreadId) : undefined,
+          originatingChannel: ctx.OriginatingChannel,
+          originatingTo: ctx.OriginatingTo,
+          messageId: messageIdForHook,
+          senderId: ctx.SenderId,
+          senderName: ctx.SenderName,
+          senderUsername: ctx.SenderUsername,
+          senderE164: ctx.SenderE164,
+        },
+      };
+
+      const matchedHandler = matchMessageHandler(messageHandlers, handlerContext);
+      if (matchedHandler) {
+        // Check rate limit before executing
+        if (isHandlerRateLimited(matchedHandler.id)) {
+          logWarn(
+            `dispatch-from-config: message handler "${matchedHandler.id}" rate limited, skipping`,
+          );
+          // Don't return early for rate-limited handlers - fall through to normal queue flow
+        } else {
+          const priority = matchedHandler.priority ?? "immediate";
+          const mode = matchedHandler.mode ?? "exclusive";
+
+          if (priority === "immediate") {
+            // Fire-and-forget for immediate handlers
+            const deps = createDefaultDeps();
+            void runMessageHandler({
+              cfg,
+              deps,
+              handler: matchedHandler,
+              context: handlerContext,
+            }).catch((err) => {
+              logWarn(
+                `dispatch-from-config: message handler "${matchedHandler.id}" failed: ${String(err)}`,
+              );
+            });
+
+            // Check mode: exclusive (default) vs parallel
+            if (mode === "exclusive") {
+              // Return early - handler takes over completely
+              return {
+                queuedFinal: false,
+                counts: dispatcher.getQueuedCounts(),
+                handledByMessageHandler: { handlerId: matchedHandler.id },
+              };
+            }
+            // parallel mode: continue with normal flow
+          }
+        }
+      }
+    }
+  }
+
   // Check if we should route replies to originating channel instead of dispatcher.
   // Only route when the originating channel is DIFFERENT from the current surface.
   // This handles cross-provider routing (e.g., message from Telegram being processed
@@ -154,6 +328,7 @@ export async function dispatchReplyFromConfig(params: {
   const sendPayloadAsync = async (
     payload: ReplyPayload,
     abortSignal?: AbortSignal,
+    mirror?: boolean,
   ): Promise<void> => {
     // TypeScript doesn't narrow these from the shouldRouteToOriginating check,
     // but they're guaranteed non-null when this function is called.
@@ -168,6 +343,7 @@ export async function dispatchReplyFromConfig(params: {
       threadId: ctx.MessageThreadId,
       cfg,
       abortSignal,
+      mirror,
     });
     if (!result.ok) {
       logVerbose(`dispatch-from-config: route-reply failed: ${result.error ?? "unknown error"}`);
@@ -212,36 +388,36 @@ export async function dispatchReplyFromConfig(params: {
       return { queuedFinal, counts };
     }
 
+    // Track accumulated block text for TTS generation after streaming completes.
+    // When block streaming succeeds, there's no final reply, so we need to generate
+    // TTS audio separately from the accumulated block content.
+    let accumulatedBlockText = "";
+    let blockCount = 0;
+
     const replyResult = await (params.replyResolver ?? getReplyFromConfig)(
       ctx,
       {
         ...params.replyOptions,
-        onToolResult: (payload: ReplyPayload) => {
-          const run = async () => {
-            const ttsPayload = await maybeApplyTtsToPayload({
-              payload,
-              cfg,
-              channel: ttsChannel,
-              kind: "tool",
-            });
-            if (shouldRouteToOriginating) {
-              await sendPayloadAsync(ttsPayload);
-            } else {
-              dispatcher.sendToolResult(ttsPayload);
-            }
-          };
-          return run();
-        },
         onBlockReply: (payload: ReplyPayload, context) => {
           const run = async () => {
+            // Accumulate block text for TTS generation after streaming
+            if (payload.text) {
+              if (accumulatedBlockText.length > 0) {
+                accumulatedBlockText += "\n";
+              }
+              accumulatedBlockText += payload.text;
+              blockCount++;
+            }
             const ttsPayload = await maybeApplyTtsToPayload({
               payload,
               cfg,
               channel: ttsChannel,
               kind: "block",
+              inboundAudio,
+              ttsAuto: sessionTtsAuto,
             });
             if (shouldRouteToOriginating) {
-              await sendPayloadAsync(ttsPayload, context?.abortSignal);
+              await sendPayloadAsync(ttsPayload, context?.abortSignal, false);
             } else {
               dispatcher.sendBlockReply(ttsPayload);
             }
@@ -262,6 +438,8 @@ export async function dispatchReplyFromConfig(params: {
         cfg,
         channel: ttsChannel,
         kind: "final",
+        inboundAudio,
+        ttsAuto: sessionTtsAuto,
       });
       if (shouldRouteToOriginating && originatingChannel && originatingTo) {
         // Route final reply to originating channel.
@@ -285,6 +463,62 @@ export async function dispatchReplyFromConfig(params: {
         queuedFinal = dispatcher.sendFinalReply(ttsReply) || queuedFinal;
       }
     }
+
+    const ttsMode = resolveTtsConfig(cfg).mode ?? "final";
+    // Generate TTS-only reply after block streaming completes (when there's no final reply).
+    // This handles the case where block streaming succeeds and drops final payloads,
+    // but we still want TTS audio to be generated from the accumulated block content.
+    if (
+      ttsMode === "final" &&
+      replies.length === 0 &&
+      blockCount > 0 &&
+      accumulatedBlockText.trim()
+    ) {
+      try {
+        const ttsSyntheticReply = await maybeApplyTtsToPayload({
+          payload: { text: accumulatedBlockText },
+          cfg,
+          channel: ttsChannel,
+          kind: "final",
+          inboundAudio,
+          ttsAuto: sessionTtsAuto,
+        });
+        // Only send if TTS was actually applied (mediaUrl exists)
+        if (ttsSyntheticReply.mediaUrl) {
+          // Send TTS-only payload (no text, just audio) so it doesn't duplicate the block content
+          const ttsOnlyPayload: ReplyPayload = {
+            mediaUrl: ttsSyntheticReply.mediaUrl,
+            audioAsVoice: ttsSyntheticReply.audioAsVoice,
+          };
+          if (shouldRouteToOriginating && originatingChannel && originatingTo) {
+            const result = await routeReply({
+              payload: ttsOnlyPayload,
+              channel: originatingChannel,
+              to: originatingTo,
+              sessionKey: ctx.SessionKey,
+              accountId: ctx.AccountId,
+              threadId: ctx.MessageThreadId,
+              cfg,
+            });
+            queuedFinal = result.ok || queuedFinal;
+            if (result.ok) routedFinalCount += 1;
+            if (!result.ok) {
+              logVerbose(
+                `dispatch-from-config: route-reply (tts-only) failed: ${result.error ?? "unknown error"}`,
+              );
+            }
+          } else {
+            const didQueue = dispatcher.sendFinalReply(ttsOnlyPayload);
+            queuedFinal = didQueue || queuedFinal;
+          }
+        }
+      } catch (err) {
+        logVerbose(
+          `dispatch-from-config: accumulated block TTS failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     await dispatcher.waitForIdle();
 
     const counts = dispatcher.getQueuedCounts();

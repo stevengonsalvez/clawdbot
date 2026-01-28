@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { createClawdbotTools } from "../agents/clawdbot-tools.js";
+import { createMoltbotTools } from "../agents/moltbot-tools.js";
 import {
   filterToolsByPolicy,
   resolveEffectiveToolPolicy,
@@ -70,7 +70,7 @@ function mergeActionIntoArgsIfSupported(params: {
 export async function handleToolsInvokeHttpRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  opts: { auth: ResolvedGatewayAuth; maxBodyBytes?: number },
+  opts: { auth: ResolvedGatewayAuth; maxBodyBytes?: number; trustedProxies?: string[] },
 ): Promise<boolean> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   if (url.pathname !== "/tools/invoke") return false;
@@ -80,11 +80,13 @@ export async function handleToolsInvokeHttpRequest(
     return true;
   }
 
+  const cfg = loadConfig();
   const token = getBearerToken(req);
   const authResult = await authorizeGatewayConnect({
     auth: opts.auth,
     connectAuth: token ? { token, password: token } : null,
     req,
+    trustedProxies: opts.trustedProxies ?? cfg.gateway?.trustedProxies,
   });
   if (!authResult.ok) {
     sendUnauthorized(res);
@@ -110,16 +112,13 @@ export async function handleToolsInvokeHttpRequest(
       : {}
   ) as Record<string, unknown>;
 
-  const cfg = loadConfig();
   const rawSessionKey = resolveSessionKeyFromBody(body);
   const sessionKey =
     !rawSessionKey || rawSessionKey === "main" ? resolveMainSessionKey(cfg) : rawSessionKey;
 
   // Resolve message channel/account hints (optional headers) for policy inheritance.
-  const messageChannel = normalizeMessageChannel(
-    getHeader(req, "x-clawdbot-message-channel") ?? "",
-  );
-  const accountId = getHeader(req, "x-clawdbot-account-id")?.trim() || undefined;
+  const messageChannel = normalizeMessageChannel(getHeader(req, "x-moltbot-message-channel") ?? "");
+  const accountId = getHeader(req, "x-moltbot-account-id")?.trim() || undefined;
 
   const {
     agentId,
@@ -129,9 +128,22 @@ export async function handleToolsInvokeHttpRequest(
     agentProviderPolicy,
     profile,
     providerProfile,
+    profileAlsoAllow,
+    providerProfileAlsoAllow,
   } = resolveEffectiveToolPolicy({ config: cfg, sessionKey });
   const profilePolicy = resolveToolProfilePolicy(profile);
   const providerProfilePolicy = resolveToolProfilePolicy(providerProfile);
+
+  const mergeAlsoAllow = (policy: typeof profilePolicy, alsoAllow?: string[]) => {
+    if (!policy?.allow || !Array.isArray(alsoAllow) || alsoAllow.length === 0) return policy;
+    return { ...policy, allow: Array.from(new Set([...policy.allow, ...alsoAllow])) };
+  };
+
+  const profilePolicyWithAlsoAllow = mergeAlsoAllow(profilePolicy, profileAlsoAllow);
+  const providerProfilePolicyWithAlsoAllow = mergeAlsoAllow(
+    providerProfilePolicy,
+    providerProfileAlsoAllow,
+  );
   const groupPolicy = resolveGroupToolPolicy({
     config: cfg,
     sessionKey,
@@ -143,7 +155,7 @@ export async function handleToolsInvokeHttpRequest(
     : undefined;
 
   // Build tool list (core + plugin tools).
-  const allTools = createClawdbotTools({
+  const allTools = createMoltbotTools({
     agentSessionKey: sessionKey,
     agentChannel: messageChannel ?? undefined,
     agentAccountId: accountId,
@@ -175,18 +187,18 @@ export async function handleToolsInvokeHttpRequest(
     if (resolved.unknownAllowlist.length > 0) {
       const entries = resolved.unknownAllowlist.join(", ");
       const suffix = resolved.strippedAllowlist
-        ? "Ignoring allowlist so core tools remain available."
+        ? "Ignoring allowlist so core tools remain available. Use tools.alsoAllow for additive plugin tool enablement."
         : "These entries won't match any tool unless the plugin is enabled.";
       logWarn(`tools: ${label} allowlist contains unknown entries (${entries}). ${suffix}`);
     }
     return expandPolicyWithPluginGroups(resolved.policy, pluginGroups);
   };
   const profilePolicyExpanded = resolvePolicy(
-    profilePolicy,
+    profilePolicyWithAlsoAllow,
     profile ? `tools.profile (${profile})` : "tools.profile",
   );
   const providerProfileExpanded = resolvePolicy(
-    providerProfilePolicy,
+    providerProfilePolicyWithAlsoAllow,
     providerProfile ? `tools.byProvider.profile (${providerProfile})` : "tools.byProvider.profile",
   );
   const globalPolicyExpanded = resolvePolicy(globalPolicy, "tools.allow");

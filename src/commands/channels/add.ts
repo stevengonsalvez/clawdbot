@@ -2,7 +2,7 @@ import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../../agents/ag
 import { listChannelPluginCatalogEntries } from "../../channels/plugins/catalog.js";
 import { getChannelPlugin, normalizeChannelId } from "../../channels/plugins/index.js";
 import type { ChannelId } from "../../channels/plugins/types.js";
-import { writeConfigFile, type ClawdbotConfig } from "../../config/config.js";
+import { writeConfigFile, type MoltbotConfig } from "../../config/config.js";
 import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from "../../routing/session-key.js";
 import { defaultRuntime, type RuntimeEnv } from "../../runtime.js";
 import { createClackPrompter } from "../../wizard/clack-prompter.js";
@@ -33,6 +33,9 @@ export type ChannelsAddOptions = {
   httpHost?: string;
   httpPort?: string;
   webhookPath?: string;
+  webhookUrl?: string;
+  audienceType?: string;
+  audience?: string;
   useEnv?: boolean;
   homeserver?: string;
   userId?: string;
@@ -57,7 +60,7 @@ function parseList(value: string | undefined): string[] | undefined {
   return parsed.length > 0 ? parsed : undefined;
 }
 
-function resolveCatalogChannelEntry(raw: string, cfg: ClawdbotConfig | null) {
+function resolveCatalogChannelEntry(raw: string, cfg: MoltbotConfig | null) {
   const trimmed = raw.trim().toLowerCase();
   if (!trimmed) return undefined;
   const workspaceDir = cfg ? resolveAgentWorkspaceDir(cfg, resolveDefaultAgentId(cfg)) : undefined;
@@ -198,6 +201,9 @@ export async function channelsAddCommand(
       httpHost: opts.httpHost,
       httpPort: opts.httpPort,
       webhookPath: opts.webhookPath,
+      webhookUrl: opts.webhookUrl,
+      audienceType: opts.audienceType,
+      audience: opts.audience,
       homeserver: opts.homeserver,
       userId: opts.userId,
       accessToken: opts.accessToken,
@@ -238,6 +244,9 @@ export async function channelsAddCommand(
     httpHost: opts.httpHost,
     httpPort: opts.httpPort,
     webhookPath: opts.webhookPath,
+    webhookUrl: opts.webhookUrl,
+    audienceType: opts.audienceType,
+    audience: opts.audience,
     homeserver: opts.homeserver,
     userId: opts.userId,
     accessToken: opts.accessToken,

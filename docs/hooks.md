@@ -6,14 +6,14 @@ read_when:
 ---
 # Hooks
 
-Hooks provide an extensible event-driven system for automating actions in response to agent commands and events. Hooks are automatically discovered from directories and can be managed via CLI commands, similar to how skills work in Clawdbot.
+Hooks provide an extensible event-driven system for automating actions in response to agent commands and events. Hooks are automatically discovered from directories and can be managed via CLI commands, similar to how skills work in Moltbot.
 
 ## Getting Oriented
 
 Hooks are small scripts that run when something happens. There are two kinds:
 
 - **Hooks** (this page): run inside the Gateway when agent events fire, like `/new`, `/reset`, `/stop`, or lifecycle events.
-- **Webhooks**: external HTTP webhooks that let other systems trigger work in Clawdbot. See [Webhook Hooks](/automation/webhook) or use `clawdbot webhooks` for Gmail helper commands.
+- **Webhooks**: external HTTP webhooks that let other systems trigger work in Moltbot. See [Webhook Hooks](/automation/webhook) or use `moltbot webhooks` for Gmail helper commands.
   
 Hooks can also be bundled inside plugins; see [Plugins](/plugin#plugin-hooks).
 
@@ -31,13 +31,13 @@ The hooks system allows you to:
 - Save session context to memory when `/new` is issued
 - Log all commands for auditing
 - Trigger custom automations on agent lifecycle events
-- Extend Clawdbot's behavior without modifying core code
+- Extend Moltbot's behavior without modifying core code
 
 ## Getting Started
 
 ### Bundled Hooks
 
-Clawdbot ships with four bundled hooks that are automatically discovered:
+Moltbot ships with four bundled hooks that are automatically discovered:
 
 - **💾 session-memory**: Saves session context to your agent workspace (default `~/clawd/memory/`) when you issue `/new`
 - **📝 command-logger**: Logs all command events to `~/.clawdbot/logs/commands.log`
@@ -47,30 +47,30 @@ Clawdbot ships with four bundled hooks that are automatically discovered:
 List available hooks:
 
 ```bash
-clawdbot hooks list
+moltbot hooks list
 ```
 
 Enable a hook:
 
 ```bash
-clawdbot hooks enable session-memory
+moltbot hooks enable session-memory
 ```
 
 Check hook status:
 
 ```bash
-clawdbot hooks check
+moltbot hooks check
 ```
 
 Get detailed information:
 
 ```bash
-clawdbot hooks info session-memory
+moltbot hooks info session-memory
 ```
 
 ### Onboarding
 
-During onboarding (`clawdbot onboard`), you'll be prompted to enable recommended hooks. The wizard automatically discovers eligible hooks and presents them for selection.
+During onboarding (`moltbot onboard`), you'll be prompted to enable recommended hooks. The wizard automatically discovers eligible hooks and presents them for selection.
 
 ## Hook Discovery
 
@@ -78,7 +78,7 @@ Hooks are automatically discovered from three directories (in order of precedenc
 
 1. **Workspace hooks**: `<workspace>/hooks/` (per-agent, highest precedence)
 2. **Managed hooks**: `~/.clawdbot/hooks/` (user-installed, shared across workspaces)
-3. **Bundled hooks**: `<clawdbot>/dist/hooks/bundled/` (shipped with Clawdbot)
+3. **Bundled hooks**: `<moltbot>/dist/hooks/bundled/` (shipped with Moltbot)
 
 Managed hook directories can be either a **single hook** or a **hook pack** (package directory).
 
@@ -92,11 +92,11 @@ my-hook/
 
 ## Hook Packs (npm/archives)
 
-Hook packs are standard npm packages that export one or more hooks via `clawdbot.hooks` in
+Hook packs are standard npm packages that export one or more hooks via `moltbot.hooks` in
 `package.json`. Install them with:
 
 ```bash
-clawdbot hooks install <path-or-spec>
+moltbot hooks install <path-or-spec>
 ```
 
 Example `package.json`:
@@ -105,7 +105,7 @@ Example `package.json`:
 {
   "name": "@acme/my-hooks",
   "version": "0.1.0",
-  "clawdbot": {
+  "moltbot": {
     "hooks": ["./hooks/my-hook", "./hooks/other-hook"]
   }
 }
@@ -124,8 +124,8 @@ The `HOOK.md` file contains metadata in YAML frontmatter plus Markdown documenta
 ---
 name: my-hook
 description: "Short description of what this hook does"
-homepage: https://docs.clawd.bot/hooks#my-hook
-metadata: {"clawdbot":{"emoji":"🔗","events":["command:new"],"requires":{"bins":["node"]}}}
+homepage: https://docs.molt.bot/hooks#my-hook
+metadata: {"moltbot":{"emoji":"🔗","events":["command:new"],"requires":{"bins":["node"]}}}
 ---
 
 # My Hook
@@ -149,7 +149,7 @@ No configuration needed.
 
 ### Metadata Fields
 
-The `metadata.clawdbot` object supports:
+The `metadata.moltbot` object supports:
 
 - **`emoji`**: Display emoji for CLI (e.g., `"💾"`)
 - **`events`**: Array of events to listen for (e.g., `["command:new", "command:reset"]`)
@@ -196,12 +196,13 @@ Each event includes:
 
 ```typescript
 {
-  type: 'command' | 'session' | 'agent' | 'gateway',
-  action: string,              // e.g., 'new', 'reset', 'stop'
+  type: 'command' | 'session' | 'agent' | 'gateway' | 'message',
+  action: string,              // e.g., 'new', 'reset', 'stop', 'received'
   sessionKey: string,          // Session identifier
   timestamp: Date,             // When the event occurred
   messages: string[],          // Push messages here to send to user
   context: {
+    // For command events:
     sessionEntry?: SessionEntry,
     sessionId?: string,
     sessionFile?: string,
@@ -209,9 +210,47 @@ Each event includes:
     senderId?: string,
     workspaceDir?: string,
     bootstrapFiles?: WorkspaceBootstrapFile[],
-    cfg?: ClawdbotConfig
+    cfg?: ClawdbotConfig,
+    // For message:received events:
+    from?: string,
+    content?: string,
+    channelId?: string,
+    metadata?: Record<string, unknown>
   }
 }
+```
+
+#### Message Received Handler Example
+
+```typescript
+import type { HookHandler } from '../../src/hooks/hooks.js';
+import { isMessageReceivedEvent } from '../../src/hooks/hooks.js';
+
+const handler: HookHandler = async (event) => {
+  if (!isMessageReceivedEvent(event)) return;
+
+  const { from, content, channelId, metadata } = event.context;
+
+  console.log(`[message-hook] ${channelId}: ${from} said "${content.slice(0, 50)}..."`);
+
+  // Example: Log to external service, analytics, audit trail, etc.
+  // await logToExternalService({ from, content, channel: channelId });
+};
+
+export default handler;
+```
+
+**HOOK.md** for message watcher:
+```markdown
+---
+name: message-watcher
+description: "Watch all inbound messages"
+metadata: {"clawdbot":{"emoji":"👀","events":["message:received"]}}
+---
+
+# Message Watcher
+
+Logs all inbound messages for debugging or auditing.
 ```
 
 ## Event Types
@@ -235,9 +274,42 @@ Triggered when the gateway starts:
 
 - **`gateway:startup`**: After channels start and hooks are loaded
 
+### Message Events
+
+Triggered when messages are received:
+
+- **`message`**: All message events (general listener)
+- **`message:received`**: When an inbound message is received from any channel (WhatsApp, Telegram, Discord, Slack, Signal, iMessage, Gateway/WebUI, MS Teams, Matrix, etc.). Fire-and-forget; cannot modify the message.
+
+#### Message Received Context
+
+For `message:received` events, the context includes:
+
+```typescript
+{
+  from: string;           // Sender identifier (phone, user ID, etc.)
+  content: string;        // Message text body
+  timestamp?: number;     // Unix ms timestamp (if available)
+  channelId: string;      // "whatsapp", "telegram", "discord", etc.
+  accountId?: string;     // Multi-account bot ID
+  conversationId?: string;// Chat/conversation ID
+  metadata: {
+    to?: string;
+    provider?: string;
+    surface?: string;
+    threadId?: string;
+    messageId?: string;
+    senderId?: string;
+    senderName?: string;
+    senderUsername?: string;
+    senderE164?: string;  // E.164 phone number
+  }
+}
+```
+
 ### Tool Result Hooks (Plugin API)
 
-These hooks are not event-stream listeners; they let plugins synchronously adjust tool results before Clawdbot persists them.
+These hooks are not event-stream listeners; they let plugins synchronously adjust tool results before Moltbot persists them.
 
 - **`tool_result_persist`**: transform tool results before they are written to the session transcript. Must be synchronous; return the updated tool result payload or `undefined` to keep it as-is. See [Agent Loop](/concepts/agent-loop).
 
@@ -248,8 +320,196 @@ Planned event types:
 - **`session:start`**: When a new session begins
 - **`session:end`**: When a session ends
 - **`agent:error`**: When an agent encounters an error
-- **`message:sent`**: When a message is sent
-- **`message:received`**: When a message is received
+- **`message:sent`**: When an outbound message is sent
+
+## Message Handlers
+
+Message handlers provide config-driven routing that triggers immediate agent execution when messages match specified conditions. Unlike regular hooks (which are fire-and-forget observers), message handlers can take over message processing entirely.
+
+### Problem Solved
+
+When cron jobs wake an agent, they inject their own prompt. Messages that arrived earlier (bug reports, user questions) sit in a queue and are never processed:
+
+```
+Bug report arrives (10:03) → queued
+Cron fires (10:10) → agent wakes with cron prompt only
+Bug report → never processed
+```
+
+Message handlers fix this by immediately processing important messages as they arrive.
+
+### Configuration
+
+```json
+{
+  "hooks": {
+    "internal": {
+      "messageHandlers": [
+        {
+          "id": "bug-reports",
+          "match": {
+            "channelId": "whatsapp",
+            "conversationId": "+447563241014",
+            "contentContains": ["bug", "error", "broken"]
+          },
+          "action": "agent",
+          "agentId": "support-bot",
+          "priority": "immediate",
+          "messagePrefix": "[BUG REPORT] ",
+          "thinking": "medium"
+        }
+      ]
+    }
+  }
+}
+```
+
+### Match Conditions
+
+All specified conditions must match (AND logic). **At least one condition is required** - empty match objects are rejected to prevent accidental catch-all handlers.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `channelId` | `string \| string[]` | Channel to match: `"whatsapp"`, `"telegram"`, `["discord", "slack"]`, or `"*"` for all |
+| `conversationId` | `string \| string[]` | Chat/group ID to match |
+| `from` | `string \| string[]` | Sender identifier (phone number, user ID) |
+| `contentPattern` | `string` | Regex pattern (case-insensitive). Unsafe patterns (ReDoS vulnerable) are rejected. |
+| `contentContains` | `string \| string[]` | Keywords to find in message (case-insensitive, any match) |
+
+**Security Note**: The `contentPattern` field is validated for ReDoS (Regular Expression Denial of Service) safety before use. Patterns that could cause catastrophic backtracking (e.g., `(a+)+`) are rejected and logged as warnings.
+
+### Handler Options
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | `string` | required | Unique identifier for this handler |
+| `enabled` | `boolean` | `true` | Enable/disable the handler |
+| `match` | `object` | required | Match conditions (see above) |
+| `action` | `"agent"` | required | Action type (currently only "agent") |
+| `agentId` | `string` | route default | Which agent processes the message |
+| `sessionKey` | `string` | auto-derived | Custom session key |
+| `priority` | `"immediate" \| "queue"` | `"immediate"` | Immediate bypasses queue |
+| `mode` | `"exclusive" \| "parallel"` | `"exclusive"` | Exclusive: handler only; Parallel: both handler AND normal flow |
+| `messagePrefix` | `string` | `""` | Text prepended to message |
+| `messageSuffix` | `string` | `""` | Text appended to message |
+| `messageTemplate` | `string` | - | Full template with `{{content}}`, `{{from}}`, `{{channelId}}`, `{{conversationId}}` |
+| `model` | `string` | - | Override model (provider/model or alias) |
+| `thinking` | `"off" \| "low" \| "medium" \| "high"` | - | Thinking level |
+| `timeoutSeconds` | `number` | - | Agent timeout |
+
+### Example Configurations
+
+#### Bug Reports from WhatsApp Group
+
+```json
+{
+  "hooks": {
+    "internal": {
+      "messageHandlers": [
+        {
+          "id": "bug-reports",
+          "match": {
+            "channelId": "whatsapp",
+            "conversationId": "+447563241014",
+            "contentContains": ["bug", "error", "broken", "fix"]
+          },
+          "action": "agent",
+          "agentId": "support-bot",
+          "priority": "immediate",
+          "messagePrefix": "[BUG REPORT] ",
+          "thinking": "medium"
+        }
+      ]
+    }
+  }
+}
+```
+
+#### All WhatsApp Messages to Specific Agent
+
+```json
+{
+  "hooks": {
+    "internal": {
+      "messageHandlers": [
+        {
+          "id": "whatsapp-handler",
+          "match": { "channelId": "whatsapp" },
+          "action": "agent",
+          "agentId": "personal-assistant",
+          "priority": "immediate"
+        }
+      ]
+    }
+  }
+}
+```
+
+#### Urgent Keywords Across All Channels
+
+```json
+{
+  "hooks": {
+    "internal": {
+      "messageHandlers": [
+        {
+          "id": "urgent-handler",
+          "match": {
+            "contentPattern": "urgent|asap|emergency|critical"
+          },
+          "action": "agent",
+          "priority": "immediate",
+          "messagePrefix": "[URGENT] ",
+          "model": "anthropic/claude-sonnet-4-20250514",
+          "thinking": "high"
+        }
+      ]
+    }
+  }
+}
+```
+
+#### Parallel Mode: Log AND Process Normally
+
+```json
+{
+  "hooks": {
+    "internal": {
+      "messageHandlers": [
+        {
+          "id": "analytics-logger",
+          "match": { "channelId": "whatsapp" },
+          "action": "agent",
+          "agentId": "analytics-bot",
+          "priority": "immediate",
+          "mode": "parallel",
+          "messageTemplate": "[LOG] From: {{from}}, Content: {{content}}"
+        }
+      ]
+    }
+  }
+}
+```
+
+This triggers `analytics-bot` AND lets the normal message flow continue (so the user's main agent also processes it).
+
+### Rate Limiting
+
+Message handlers are rate limited to prevent cost explosions from unbounded agent execution:
+
+- **Default limit**: 10 executions per minute per handler
+- Rate-limited messages fall through to normal queue processing
+- A warning is logged when rate limiting kicks in
+
+This protects against scenarios like a busy group chat triggering dozens of agent executions per minute.
+
+### Order of Evaluation
+
+1. Handlers are evaluated in order (first match wins)
+2. Disabled handlers (`enabled: false`) are skipped
+3. Rate limiting is checked before execution
+4. If a handler matches with `mode: "exclusive"` (default), normal processing stops
+5. If a handler matches with `mode: "parallel"`, normal processing continues after the handler fires
 
 ## Creating Custom Hooks
 
@@ -271,7 +531,7 @@ cd ~/.clawdbot/hooks/my-hook
 ---
 name: my-hook
 description: "Does something useful"
-metadata: {"clawdbot":{"emoji":"🎯","events":["command:new"]}}
+metadata: {"moltbot":{"emoji":"🎯","events":["command:new"]}}
 ---
 
 # My Custom Hook
@@ -300,10 +560,10 @@ export default handler;
 
 ```bash
 # Verify hook is discovered
-clawdbot hooks list
+moltbot hooks list
 
 # Enable it
-clawdbot hooks enable my-hook
+moltbot hooks enable my-hook
 
 # Restart your gateway process (menu bar app restart on macOS, or restart your dev process)
 
@@ -397,46 +657,46 @@ The old config format still works for backwards compatibility:
 
 ```bash
 # List all hooks
-clawdbot hooks list
+moltbot hooks list
 
 # Show only eligible hooks
-clawdbot hooks list --eligible
+moltbot hooks list --eligible
 
 # Verbose output (show missing requirements)
-clawdbot hooks list --verbose
+moltbot hooks list --verbose
 
 # JSON output
-clawdbot hooks list --json
+moltbot hooks list --json
 ```
 
 ### Hook Information
 
 ```bash
 # Show detailed info about a hook
-clawdbot hooks info session-memory
+moltbot hooks info session-memory
 
 # JSON output
-clawdbot hooks info session-memory --json
+moltbot hooks info session-memory --json
 ```
 
 ### Check Eligibility
 
 ```bash
 # Show eligibility summary
-clawdbot hooks check
+moltbot hooks check
 
 # JSON output
-clawdbot hooks check --json
+moltbot hooks check --json
 ```
 
 ### Enable/Disable
 
 ```bash
 # Enable a hook
-clawdbot hooks enable session-memory
+moltbot hooks enable session-memory
 
 # Disable a hook
-clawdbot hooks disable command-logger
+moltbot hooks disable command-logger
 ```
 
 ## Bundled Hooks
@@ -475,7 +735,7 @@ Saves session context to memory when you issue `/new`.
 **Enable**:
 
 ```bash
-clawdbot hooks enable session-memory
+moltbot hooks enable session-memory
 ```
 
 ### command-logger
@@ -516,7 +776,7 @@ grep '"action":"new"' ~/.clawdbot/logs/commands.log | jq .
 **Enable**:
 
 ```bash
-clawdbot hooks enable command-logger
+moltbot hooks enable command-logger
 ```
 
 ### soul-evil
@@ -532,7 +792,7 @@ Swaps injected `SOUL.md` content with `SOUL_EVIL.md` during a purge window or by
 **Enable**:
 
 ```bash
-clawdbot hooks enable soul-evil
+moltbot hooks enable soul-evil
 ```
 
 **Config**:
@@ -572,7 +832,7 @@ Internal hooks must be enabled for this to run.
 **Enable**:
 
 ```bash
-clawdbot hooks enable boot-md
+moltbot hooks enable boot-md
 ```
 
 ## Best Practices
@@ -629,13 +889,13 @@ const handler: HookHandler = async (event) => {
 Specify exact events in metadata when possible:
 
 ```yaml
-metadata: {"clawdbot":{"events":["command:new"]}}  # Specific
+metadata: {"moltbot":{"events":["command:new"]}}  # Specific
 ```
 
 Rather than:
 
 ```yaml
-metadata: {"clawdbot":{"events":["command"]}}      # General - more overhead
+metadata: {"moltbot":{"events":["command"]}}      # General - more overhead
 ```
 
 ## Debugging
@@ -655,7 +915,7 @@ Registered hook: boot-md -> gateway:startup
 List all discovered hooks:
 
 ```bash
-clawdbot hooks list --verbose
+moltbot hooks list --verbose
 ```
 
 ### Check Registration
@@ -674,7 +934,7 @@ const handler: HookHandler = async (event) => {
 Check why a hook isn't eligible:
 
 ```bash
-clawdbot hooks info my-hook
+moltbot hooks info my-hook
 ```
 
 Look for missing requirements in the output.
@@ -777,7 +1037,7 @@ Session reset
 
 3. List all discovered hooks:
    ```bash
-   clawdbot hooks list
+   moltbot hooks list
    ```
 
 ### Hook Not Eligible
@@ -785,7 +1045,7 @@ Session reset
 Check requirements:
 
 ```bash
-clawdbot hooks info my-hook
+moltbot hooks info my-hook
 ```
 
 Look for missing:
@@ -798,7 +1058,7 @@ Look for missing:
 
 1. Verify hook is enabled:
    ```bash
-   clawdbot hooks list
+   moltbot hooks list
    # Should show ✓ next to enabled hooks
    ```
 
@@ -853,7 +1113,7 @@ node -e "import('./path/to/handler.ts').then(console.log)"
    ---
    name: my-hook
    description: "My custom hook"
-   metadata: {"clawdbot":{"emoji":"🎯","events":["command:new"]}}
+   metadata: {"moltbot":{"emoji":"🎯","events":["command:new"]}}
    ---
 
    # My Hook
@@ -877,7 +1137,7 @@ node -e "import('./path/to/handler.ts').then(console.log)"
 
 4. Verify and restart your gateway process:
    ```bash
-   clawdbot hooks list
+   moltbot hooks list
    # Should show: 🎯 my-hook ✓
    ```
 
@@ -891,6 +1151,6 @@ node -e "import('./path/to/handler.ts').then(console.log)"
 ## See Also
 
 - [CLI Reference: hooks](/cli/hooks)
-- [Bundled Hooks README](https://github.com/clawdbot/clawdbot/tree/main/src/hooks/bundled)
+- [Bundled Hooks README](https://github.com/moltbot/moltbot/tree/main/src/hooks/bundled)
 - [Webhook Hooks](/automation/webhook)
 - [Configuration](/gateway/configuration#hooks)

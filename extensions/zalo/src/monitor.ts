@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import type { ClawdbotConfig, MarkdownTableMode } from "clawdbot/plugin-sdk";
+import type { MoltbotConfig, MarkdownTableMode } from "clawdbot/plugin-sdk";
 
 import type { ResolvedZaloAccount } from "./accounts.js";
 import {
@@ -25,7 +25,7 @@ export type ZaloRuntimeEnv = {
 export type ZaloMonitorOptions = {
   token: string;
   account: ResolvedZaloAccount;
-  config: ClawdbotConfig;
+  config: MoltbotConfig;
   runtime: ZaloRuntimeEnv;
   abortSignal: AbortSignal;
   useWebhook?: boolean;
@@ -94,7 +94,7 @@ async function readJsonBody(req: IncomingMessage, maxBytes: number) {
 type WebhookTarget = {
   token: string;
   account: ResolvedZaloAccount;
-  config: ClawdbotConfig;
+  config: MoltbotConfig;
   runtime: ZaloRuntimeEnv;
   core: ZaloCoreRuntime;
   secret: string;
@@ -217,7 +217,7 @@ export async function handleZaloWebhookRequest(
 function startPollingLoop(params: {
   token: string;
   account: ResolvedZaloAccount;
-  config: ClawdbotConfig;
+  config: MoltbotConfig;
   runtime: ZaloRuntimeEnv;
   core: ZaloCoreRuntime;
   abortSignal: AbortSignal;
@@ -280,7 +280,7 @@ async function processUpdate(
   update: ZaloUpdate,
   token: string,
   account: ResolvedZaloAccount,
-  config: ClawdbotConfig,
+  config: MoltbotConfig,
   runtime: ZaloRuntimeEnv,
   core: ZaloCoreRuntime,
   mediaMaxMb: number,
@@ -331,7 +331,7 @@ async function handleTextMessage(
   message: ZaloMessage,
   token: string,
   account: ResolvedZaloAccount,
-  config: ClawdbotConfig,
+  config: MoltbotConfig,
   runtime: ZaloRuntimeEnv,
   core: ZaloCoreRuntime,
   statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void,
@@ -359,7 +359,7 @@ async function handleImageMessage(
   message: ZaloMessage,
   token: string,
   account: ResolvedZaloAccount,
-  config: ClawdbotConfig,
+  config: MoltbotConfig,
   runtime: ZaloRuntimeEnv,
   core: ZaloCoreRuntime,
   mediaMaxMb: number,
@@ -407,7 +407,7 @@ async function processMessageWithPipeline(params: {
   message: ZaloMessage;
   token: string;
   account: ResolvedZaloAccount;
-  config: ClawdbotConfig;
+  config: MoltbotConfig;
   runtime: ZaloRuntimeEnv;
   core: ZaloCoreRuntime;
   text?: string;
@@ -596,6 +596,8 @@ async function processMessageWithPipeline(params: {
           chatId,
           runtime,
           core,
+          config,
+          accountId: account.accountId,
           statusSink,
           fetcher,
           tableMode,
@@ -614,11 +616,13 @@ async function deliverZaloReply(params: {
   chatId: string;
   runtime: ZaloRuntimeEnv;
   core: ZaloCoreRuntime;
+  config: MoltbotConfig;
+  accountId?: string;
   statusSink?: (patch: { lastInboundAt?: number; lastOutboundAt?: number }) => void;
   fetcher?: ZaloFetch;
   tableMode?: MarkdownTableMode;
 }): Promise<void> {
-  const { payload, token, chatId, runtime, core, statusSink, fetcher } = params;
+  const { payload, token, chatId, runtime, core, config, accountId, statusSink, fetcher } = params;
   const tableMode = params.tableMode ?? "code";
   const text = core.channel.text.convertMarkdownTables(payload.text ?? "", tableMode);
 
@@ -644,7 +648,12 @@ async function deliverZaloReply(params: {
   }
 
   if (text) {
-    const chunks = core.channel.text.chunkMarkdownText(text, ZALO_TEXT_LIMIT);
+    const chunkMode = core.channel.text.resolveChunkMode(config, "zalo", accountId);
+    const chunks = core.channel.text.chunkMarkdownTextWithMode(
+      text,
+      ZALO_TEXT_LIMIT,
+      chunkMode,
+    );
     for (const chunk of chunks) {
       try {
         await sendMessage(token, { chat_id: chatId, text: chunk }, fetcher);

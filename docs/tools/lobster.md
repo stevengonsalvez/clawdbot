@@ -1,7 +1,7 @@
 ---
 title: Lobster
-summary: "Typed workflow runtime for Clawdbot with resumable approval gates."
-description: Typed workflow runtime for Clawdbot — composable pipelines with approval gates.
+summary: "Typed workflow runtime for Moltbot with resumable approval gates."
+description: Typed workflow runtime for Moltbot — composable pipelines with approval gates.
 read_when:
   - You want deterministic multi-step workflows with explicit approvals
   - You need to resume a workflow without re-running earlier steps
@@ -9,7 +9,7 @@ read_when:
 
 # Lobster
 
-Lobster is a workflow shell that lets Clawdbot run multi-step tool sequences as a single, deterministic operation with explicit approval checkpoints.
+Lobster is a workflow shell that lets Moltbot run multi-step tool sequences as a single, deterministic operation with explicit approval checkpoints.
 
 ## Hook
 
@@ -19,13 +19,23 @@ Your assistant can build the tools that manage itself. Ask for a workflow, and 3
 
 Today, complex workflows require many back-and-forth tool calls. Each call costs tokens, and the LLM has to orchestrate every step. Lobster moves that orchestration into a typed runtime:
 
-- **One call instead of many**: Clawdbot runs one Lobster tool call and gets a structured result.
+- **One call instead of many**: Moltbot runs one Lobster tool call and gets a structured result.
 - **Approvals built in**: Side effects (send email, post comment) halt the workflow until explicitly approved.
 - **Resumable**: Halted workflows return a token; approve and resume without re-running everything.
 
+## Why a DSL instead of plain programs?
+
+Lobster is intentionally small. The goal is not "a new language," it's a predictable, AI-friendly pipeline spec with first-class approvals and resume tokens.
+
+- **Approve/resume is built in**: A normal program can prompt a human, but it can’t *pause and resume* with a durable token without you inventing that runtime yourself.
+- **Determinism + auditability**: Pipelines are data, so they’re easy to log, diff, replay, and review.
+- **Constrained surface for AI**: A tiny grammar + JSON piping reduces “creative” code paths and makes validation realistic.
+- **Safety policy baked in**: Timeouts, output caps, sandbox checks, and allowlists are enforced by the runtime, not each script.
+- **Still programmable**: Each step can call any CLI or script. If you want JS/TS, generate `.lobster` files from code.
+
 ## How it works
 
-Clawdbot launches the local `lobster` CLI in **tool mode** and parses a JSON envelope from stdout.
+Moltbot launches the local `lobster` CLI in **tool mode** and parses a JSON envelope from stdout.
 If the pipeline pauses for approval, the tool returns a `resumeToken` so you can continue later.
 
 ## Pattern: small CLI + JSON pipes + approvals
@@ -113,7 +123,7 @@ See [LLM Task](/tools/llm-task) for details and configuration options.
 
 ## Workflow files (.lobster)
 
-Lobster can run YAML/JSON workflow files with `name`, `args`, `steps`, `env`, `condition`, and `approval` fields. In Clawdbot tool calls, set `pipeline` to the file path.
+Lobster can run YAML/JSON workflow files with `name`, `args`, `steps`, `env`, `condition`, and `approval` fields. In Moltbot tool calls, set `pipeline` to the file path.
 
 ```yaml
 name: inbox-triage
@@ -143,12 +153,24 @@ Notes:
 
 ## Install Lobster
 
-Install the Lobster CLI on the **same host** that runs the Clawdbot Gateway (see the [Lobster repo](https://github.com/clawdbot/lobster)), and ensure `lobster` is on `PATH`.
+Install the Lobster CLI on the **same host** that runs the Moltbot Gateway (see the [Lobster repo](https://github.com/moltbot/lobster)), and ensure `lobster` is on `PATH`.
 If you want to use a custom binary location, pass an **absolute** `lobsterPath` in the tool call.
 
 ## Enable the tool
 
-Lobster is an **optional** plugin tool (not enabled by default). Allow it per agent:
+Lobster is an **optional** plugin tool (not enabled by default).
+
+Recommended (additive, safe):
+
+```json
+{
+  "tools": {
+    "alsoAllow": ["lobster"]
+  }
+}
+```
+
+Or per-agent:
 
 ```json
 {
@@ -157,7 +179,7 @@ Lobster is an **optional** plugin tool (not enabled by default). Allow it per ag
       {
         "id": "main",
         "tools": {
-          "allow": ["lobster"]
+          "alsoAllow": ["lobster"]
         }
       }
     ]
@@ -165,10 +187,10 @@ Lobster is an **optional** plugin tool (not enabled by default). Allow it per ag
 }
 ```
 
-You can also allow it globally with `tools.allow` if every agent should see it.
+Avoid using `tools.allow: ["lobster"]` unless you intend to run in restrictive allowlist mode.
 
 Note: allowlists are opt-in for optional plugins. If your allowlist only names
-plugin tools (like `lobster`), Clawdbot keeps core tools enabled. To restrict core
+plugin tools (like `lobster`), Moltbot keeps core tools enabled. To restrict core
 tools, include the core tools or groups you want in the allowlist too.
 
 ## Example: Email triage

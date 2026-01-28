@@ -7,7 +7,7 @@ let getTelegramSequentialKey: typeof import("./bot.js").getTelegramSequentialKey
 let resetInboundDedupe: typeof import("../auto-reply/reply/inbound-dedupe.js").resetInboundDedupe;
 
 const { sessionStorePath } = vi.hoisted(() => ({
-  sessionStorePath: `/tmp/clawdbot-telegram-throttler-${Math.random().toString(16).slice(2)}.json`,
+  sessionStorePath: `/tmp/moltbot-telegram-throttler-${Math.random().toString(16).slice(2)}.json`,
 }));
 const { loadWebMedia } = vi.hoisted(() => ({
   loadWebMedia: vi.fn(),
@@ -90,6 +90,7 @@ vi.mock("grammy", () => ({
     on = onSpy;
     stop = stopSpy;
     command = commandSpy;
+    catch = vi.fn();
     constructor(
       public token: string,
       public options?: {
@@ -177,13 +178,11 @@ describe("createTelegramBot", () => {
     expect(throttlerSpy).toHaveBeenCalledTimes(1);
     expect(useSpy).toHaveBeenCalledWith("throttler");
   });
-  it("forces native fetch only under Bun", () => {
+  it("uses wrapped fetch when global fetch is available", () => {
     const originalFetch = globalThis.fetch;
-    const originalBun = (globalThis as { Bun?: unknown }).Bun;
     const fetchSpy = vi.fn() as unknown as typeof fetch;
     globalThis.fetch = fetchSpy;
     try {
-      (globalThis as { Bun?: unknown }).Bun = {};
       createTelegramBot({ token: "tok" });
       const fetchImpl = resolveTelegramFetch();
       expect(fetchImpl).toBeTypeOf("function");
@@ -194,33 +193,6 @@ describe("createTelegramBot", () => {
       expect(clientFetch).not.toBe(fetchSpy);
     } finally {
       globalThis.fetch = originalFetch;
-      if (originalBun === undefined) {
-        delete (globalThis as { Bun?: unknown }).Bun;
-      } else {
-        (globalThis as { Bun?: unknown }).Bun = originalBun;
-      }
-    }
-  });
-  it("does not force native fetch on Node", () => {
-    const originalFetch = globalThis.fetch;
-    const originalBun = (globalThis as { Bun?: unknown }).Bun;
-    const fetchSpy = vi.fn() as unknown as typeof fetch;
-    globalThis.fetch = fetchSpy;
-    try {
-      if (originalBun !== undefined) {
-        delete (globalThis as { Bun?: unknown }).Bun;
-      }
-      createTelegramBot({ token: "tok" });
-      const fetchImpl = resolveTelegramFetch();
-      expect(fetchImpl).toBeUndefined();
-      expect(botCtorSpy).toHaveBeenCalledWith("tok", undefined);
-    } finally {
-      globalThis.fetch = originalFetch;
-      if (originalBun === undefined) {
-        delete (globalThis as { Bun?: unknown }).Bun;
-      } else {
-        (globalThis as { Bun?: unknown }).Bun = originalBun;
-      }
     }
   });
   it("passes timeoutSeconds even without a custom fetch", () => {
@@ -266,12 +238,17 @@ describe("createTelegramBot", () => {
     expect(getTelegramSequentialKey({ message: { chat: { id: 123 } } })).toBe("telegram:123");
     expect(
       getTelegramSequentialKey({
-        message: { chat: { id: 123 }, message_thread_id: 9 },
+        message: { chat: { id: 123, type: "private" }, message_thread_id: 9 },
       }),
     ).toBe("telegram:123:topic:9");
     expect(
       getTelegramSequentialKey({
-        message: { chat: { id: 123, is_forum: true } },
+        message: { chat: { id: 123, type: "supergroup" }, message_thread_id: 9 },
+      }),
+    ).toBe("telegram:123");
+    expect(
+      getTelegramSequentialKey({
+        message: { chat: { id: 123, type: "supergroup", is_forum: true } },
       }),
     ).toBe("telegram:123:topic:1");
     expect(
@@ -317,7 +294,7 @@ describe("createTelegramBot", () => {
           message_id: 10,
         },
       },
-      me: { username: "clawdbot_bot" },
+      me: { username: "moltbot_bot" },
       getFile: async () => ({ download: async () => new Uint8Array() }),
     });
 
@@ -351,7 +328,7 @@ describe("createTelegramBot", () => {
       };
       await handler({
         message,
-        me: { username: "clawdbot_bot" },
+        me: { username: "moltbot_bot" },
         getFile: async () => ({ download: async () => new Uint8Array() }),
       });
 
@@ -394,7 +371,7 @@ describe("createTelegramBot", () => {
         date: 1736380800,
         from: { id: 999, username: "random" },
       },
-      me: { username: "clawdbot_bot" },
+      me: { username: "moltbot_bot" },
       getFile: async () => ({ download: async () => new Uint8Array() }),
     });
 
@@ -431,12 +408,12 @@ describe("createTelegramBot", () => {
 
     await handler({
       message,
-      me: { username: "clawdbot_bot" },
+      me: { username: "moltbot_bot" },
       getFile: async () => ({ download: async () => new Uint8Array() }),
     });
     await handler({
       message: { ...message, text: "hello again" },
-      me: { username: "clawdbot_bot" },
+      me: { username: "moltbot_bot" },
       getFile: async () => ({ download: async () => new Uint8Array() }),
     });
 
@@ -451,7 +428,7 @@ describe("createTelegramBot", () => {
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
     await handler({
       message: { chat: { id: 42, type: "private" }, text: "hi" },
-      me: { username: "clawdbot_bot" },
+      me: { username: "moltbot_bot" },
       getFile: async () => ({ download: async () => new Uint8Array() }),
     });
 

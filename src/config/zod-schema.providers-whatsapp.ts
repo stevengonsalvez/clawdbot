@@ -10,6 +10,8 @@ import {
 import { ToolPolicySchema } from "./zod-schema.agent-runtime.js";
 import { ChannelHeartbeatVisibilitySchema } from "./zod-schema.channels.js";
 
+const ToolPolicyBySenderSchema = z.record(z.string(), ToolPolicySchema).optional();
+
 export const WhatsAppAccountSchema = z
   .object({
     name: z.string().optional(),
@@ -30,6 +32,7 @@ export const WhatsAppAccountSchema = z
     dmHistoryLimit: z.number().int().min(0).optional(),
     dms: z.record(z.string(), DmConfigSchema.optional()).optional(),
     textChunkLimit: z.number().int().positive().optional(),
+    chunkMode: z.enum(["length", "newline"]).optional(),
     mediaMaxMb: z.number().int().positive().optional(),
     blockStreaming: z.boolean().optional(),
     blockStreamingCoalesce: BlockStreamingCoalesceSchema.optional(),
@@ -40,6 +43,7 @@ export const WhatsAppAccountSchema = z
           .object({
             requireMention: z.boolean().optional(),
             tools: ToolPolicySchema,
+            toolsBySender: ToolPolicyBySenderSchema,
           })
           .strict()
           .optional(),
@@ -85,6 +89,7 @@ export const WhatsAppConfigSchema = z
     dmHistoryLimit: z.number().int().min(0).optional(),
     dms: z.record(z.string(), DmConfigSchema.optional()).optional(),
     textChunkLimit: z.number().int().positive().optional(),
+    chunkMode: z.enum(["length", "newline"]).optional(),
     mediaMaxMb: z.number().int().positive().optional().default(50),
     blockStreaming: z.boolean().optional(),
     blockStreamingCoalesce: BlockStreamingCoalesceSchema.optional(),
@@ -103,6 +108,7 @@ export const WhatsAppConfigSchema = z
           .object({
             requireMention: z.boolean().optional(),
             tools: ToolPolicySchema,
+            toolsBySender: ToolPolicyBySenderSchema,
           })
           .strict()
           .optional(),

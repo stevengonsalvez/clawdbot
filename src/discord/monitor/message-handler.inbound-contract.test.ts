@@ -29,7 +29,7 @@ describe("discord processDiscordMessage inbound contract", () => {
   it("passes a finalized MsgContext to dispatchInboundMessage", async () => {
     capturedCtx = undefined;
 
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-discord-"));
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "moltbot-discord-"));
     const storePath = path.join(dir, "sessions.json");
 
     await processDiscordMessage({
@@ -80,12 +80,12 @@ describe("discord processDiscordMessage inbound contract", () => {
       guildInfo: null,
       guildSlug: "",
       channelConfig: null,
-      baseSessionKey: "agent:main:discord:dm:U1",
+      baseSessionKey: "agent:main:discord:dm:u1",
       route: {
         agentId: "main",
         channel: "discord",
         accountId: "default",
-        sessionKey: "agent:main:discord:dm:U1",
+        sessionKey: "agent:main:discord:dm:u1",
         mainSessionKey: "agent:main:main",
       } as any,
     } as any);

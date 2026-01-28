@@ -1,5 +1,6 @@
 import type { SlackActionMiddlewareArgs, SlackCommandMiddlewareArgs } from "@slack/bolt";
 import type { ChatCommandDefinition, CommandArgs } from "../../auto-reply/commands-registry.js";
+import { resolveChunkMode } from "../../auto-reply/chunk.js";
 import { resolveEffectiveMessagesConfig } from "../../agents/identity.js";
 import {
   buildCommandTextFromArgs,
@@ -40,7 +41,7 @@ import { deliverSlackSlashReplies } from "./replies.js";
 
 type SlackBlock = { type: string; [key: string]: unknown };
 
-const SLACK_COMMAND_ARG_ACTION_ID = "clawdbot_cmdarg";
+const SLACK_COMMAND_ARG_ACTION_ID = "moltbot_cmdarg";
 const SLACK_COMMAND_ARG_VALUE_PREFIX = "cmdarg";
 
 function chunkItems<T>(items: T[], size: number): T[][] {
@@ -102,7 +103,7 @@ function buildSlackCommandArgMenuBlocks(params: {
   title: string;
   command: string;
   arg: string;
-  choices: string[];
+  choices: Array<{ value: string; label: string }>;
   userId: string;
 }) {
   const rows = chunkItems(params.choices, 5).map((choices) => ({
@@ -110,11 +111,11 @@ function buildSlackCommandArgMenuBlocks(params: {
     elements: choices.map((choice) => ({
       type: "button",
       action_id: SLACK_COMMAND_ARG_ACTION_ID,
-      text: { type: "plain_text", text: choice },
+      text: { type: "plain_text", text: choice.label },
       value: encodeSlackCommandArgValue({
         command: params.command,
         arg: params.arg,
-        value: choice,
+        value: choice.value,
         userId: params.userId,
       }),
     })),
@@ -408,7 +409,8 @@ export function registerSlackMonitorSlashCommands(params: {
         WasMentioned: true,
         MessageSid: command.trigger_id,
         Timestamp: Date.now(),
-        SessionKey: `agent:${route.agentId}:${slashCommand.sessionPrefix}:${command.user_id}`,
+        SessionKey:
+          `agent:${route.agentId}:${slashCommand.sessionPrefix}:${command.user_id}`.toLowerCase(),
         CommandTargetSessionKey: route.sessionKey,
         AccountId: route.accountId,
         CommandSource: "native" as const,
@@ -428,6 +430,7 @@ export function registerSlackMonitorSlashCommands(params: {
               respond,
               ephemeral: slashCommand.ephemeral,
               textLimit: ctx.textLimit,
+              chunkMode: resolveChunkMode(cfg, "slack", route.accountId),
               tableMode: resolveMarkdownTableMode({
                 cfg,
                 channel: "slack",
@@ -447,6 +450,7 @@ export function registerSlackMonitorSlashCommands(params: {
           respond,
           ephemeral: slashCommand.ephemeral,
           textLimit: ctx.textLimit,
+          chunkMode: resolveChunkMode(cfg, "slack", route.accountId),
           tableMode: resolveMarkdownTableMode({
             cfg,
             channel: "slack",

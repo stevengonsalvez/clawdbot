@@ -1,8 +1,8 @@
 import type { OAuthCredentials } from "@mariozechner/pi-ai";
-import { resolveClawdbotAgentDir } from "../agents/agent-paths.js";
+import { resolveMoltbotAgentDir } from "../agents/agent-paths.js";
 import { upsertAuthProfile } from "../agents/auth-profiles.js";
 
-const resolveAuthAgentDir = (agentDir?: string) => agentDir ?? resolveClawdbotAgentDir();
+const resolveAuthAgentDir = (agentDir?: string) => agentDir ?? resolveMoltbotAgentDir();
 
 export async function writeOAuthCredentials(
   provider: string,
@@ -93,6 +93,19 @@ export async function setSyntheticApiKey(key: string, agentDir?: string) {
     credential: {
       type: "api_key",
       provider: "synthetic",
+      key,
+    },
+    agentDir: resolveAuthAgentDir(agentDir),
+  });
+}
+
+export async function setVeniceApiKey(key: string, agentDir?: string) {
+  // Write to resolved agent dir so gateway finds credentials on startup.
+  upsertAuthProfile({
+    profileId: "venice:default",
+    credential: {
+      type: "api_key",
+      provider: "venice",
       key,
     },
     agentDir: resolveAuthAgentDir(agentDir),

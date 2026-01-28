@@ -3,7 +3,7 @@ import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { resolveUserPath } from "../../utils.js";
 import { isMarkdownCapableMessageChannel } from "../../utils/message-channel.js";
-import { resolveClawdbotAgentDir } from "../agent-paths.js";
+import { resolveMoltbotAgentDir } from "../agent-paths.js";
 import {
   isProfileInCooldown,
   markAuthProfileFailure,
@@ -25,7 +25,7 @@ import {
   type ResolvedProviderAuth,
 } from "../model-auth.js";
 import { normalizeProviderId } from "../model-selection.js";
-import { ensureClawdbotModelsJson } from "../models-config.js";
+import { ensureMoltbotModelsJson } from "../models-config.js";
 import {
   classifyFailoverReason,
   formatAssistantErrorText,
@@ -34,6 +34,7 @@ import {
   isContextOverflowError,
   isFailoverAssistantError,
   isFailoverErrorMessage,
+  parseImageSizeError,
   parseImageDimensionError,
   isRateLimitAssistantError,
   isTimeoutErrorMessage,
@@ -42,6 +43,7 @@ import {
 } from "../pi-embedded-helpers.js";
 import { normalizeUsage, type UsageLike } from "../usage.js";
 
+import { compactEmbeddedPiSessionDirect } from "./compact.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { resolveModel } from "./model.js";
@@ -92,10 +94,10 @@ export async function runEmbeddedPiAgent(
 
       const provider = (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
       const modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
-      const agentDir = params.agentDir ?? resolveClawdbotAgentDir();
+      const agentDir = params.agentDir ?? resolveMoltbotAgentDir();
       const fallbackConfigured =
         (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0;
-      await ensureClawdbotModelsJson(params.config, agentDir);
+      await ensureMoltbotModelsJson(params.config, agentDir);
 
       const { model, error, authStorage, modelRegistry } = resolveModel(
         provider,
@@ -290,6 +292,7 @@ export async function runEmbeddedPiAgent(
         }
       }
 
+      let overflowCompactionAttempted = false;
       try {
         while (true) {
           attemptedThinking.add(thinkLevel);
@@ -358,9 +361,42 @@ export async function runEmbeddedPiAgent(
           if (promptError && !aborted) {
             const errorText = describeUnknownError(promptError);
             if (isContextOverflowError(errorText)) {
-              const kind = isCompactionFailureError(errorText)
-                ? "compaction_failure"
-                : "context_overflow";
+              const isCompactionFailure = isCompactionFailureError(errorText);
+              // Attempt auto-compaction on context overflow (not compaction_failure)
+              if (!isCompactionFailure && !overflowCompactionAttempted) {
+                log.warn(
+                  `context overflow detected; attempting auto-compaction for ${provider}/${modelId}`,
+                );
+                overflowCompactionAttempted = true;
+                const compactResult = await compactEmbeddedPiSessionDirect({
+                  sessionId: params.sessionId,
+                  sessionKey: params.sessionKey,
+                  messageChannel: params.messageChannel,
+                  messageProvider: params.messageProvider,
+                  agentAccountId: params.agentAccountId,
+                  authProfileId: lastProfileId,
+                  sessionFile: params.sessionFile,
+                  workspaceDir: params.workspaceDir,
+                  agentDir,
+                  config: params.config,
+                  skillsSnapshot: params.skillsSnapshot,
+                  provider,
+                  model: modelId,
+                  thinkLevel,
+                  reasoningLevel: params.reasoningLevel,
+                  bashElevated: params.bashElevated,
+                  extraSystemPrompt: params.extraSystemPrompt,
+                  ownerNumbers: params.ownerNumbers,
+                });
+                if (compactResult.compacted) {
+                  log.info(`auto-compaction succeeded for ${provider}/${modelId}; retrying prompt`);
+                  continue;
+                }
+                log.warn(
+                  `auto-compaction failed for ${provider}/${modelId}: ${compactResult.reason ?? "nothing to compact"}`,
+                );
+              }
+              const kind = isCompactionFailure ? "compaction_failure" : "context_overflow";
               return {
                 payloads: [
                   {
@@ -402,6 +438,34 @@ export async function runEmbeddedPiAgent(
                   },
                   systemPromptReport: attempt.systemPromptReport,
                   error: { kind: "role_ordering", message: errorText },
+                },
+              };
+            }
+            // Handle image size errors with a user-friendly message (no retry needed)
+            const imageSizeError = parseImageSizeError(errorText);
+            if (imageSizeError) {
+              const maxMb = imageSizeError.maxMb;
+              const maxMbLabel =
+                typeof maxMb === "number" && Number.isFinite(maxMb) ? `${maxMb}` : null;
+              const maxBytesHint = maxMbLabel ? ` (max ${maxMbLabel}MB)` : "";
+              return {
+                payloads: [
+                  {
+                    text:
+                      `Image too large for the model${maxBytesHint}. ` +
+                      "Please compress or resize the image and try again.",
+                    isError: true,
+                  },
+                ],
+                meta: {
+                  durationMs: Date.now() - started,
+                  agentMeta: {
+                    sessionId: sessionIdUsed,
+                    provider,
+                    model: model.id,
+                  },
+                  systemPromptReport: attempt.systemPromptReport,
+                  error: { kind: "image_size", message: errorText },
                 },
               };
             }
@@ -564,7 +628,7 @@ export async function runEmbeddedPiAgent(
             verboseLevel: params.verboseLevel,
             reasoningLevel: params.reasoningLevel,
             toolResultFormat: resolvedToolResultFormat,
-            inlineToolResultsAllowed: !params.onPartialReply && !params.onToolResult,
+            inlineToolResultsAllowed: false,
           });
 
           log.debug(

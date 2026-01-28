@@ -4,7 +4,13 @@ import {
   SYNTHETIC_DEFAULT_MODEL_REF,
   SYNTHETIC_MODEL_CATALOG,
 } from "../agents/synthetic-models.js";
-import type { ClawdbotConfig } from "../config/config.js";
+import {
+  buildVeniceModelDefinition,
+  VENICE_BASE_URL,
+  VENICE_DEFAULT_MODEL_REF,
+  VENICE_MODEL_CATALOG,
+} from "../agents/venice-models.js";
+import type { MoltbotConfig } from "../config/config.js";
 import {
   OPENROUTER_DEFAULT_MODEL_REF,
   VERCEL_AI_GATEWAY_DEFAULT_MODEL_REF,
@@ -21,7 +27,7 @@ import {
   MOONSHOT_DEFAULT_MODEL_REF,
 } from "./onboard-auth.models.js";
 
-export function applyZaiConfig(cfg: ClawdbotConfig): ClawdbotConfig {
+export function applyZaiConfig(cfg: MoltbotConfig): MoltbotConfig {
   const models = { ...cfg.agents?.defaults?.models };
   models[ZAI_DEFAULT_MODEL_REF] = {
     ...models[ZAI_DEFAULT_MODEL_REF],
@@ -49,7 +55,7 @@ export function applyZaiConfig(cfg: ClawdbotConfig): ClawdbotConfig {
   };
 }
 
-export function applyOpenrouterProviderConfig(cfg: ClawdbotConfig): ClawdbotConfig {
+export function applyOpenrouterProviderConfig(cfg: MoltbotConfig): MoltbotConfig {
   const models = { ...cfg.agents?.defaults?.models };
   models[OPENROUTER_DEFAULT_MODEL_REF] = {
     ...models[OPENROUTER_DEFAULT_MODEL_REF],
@@ -68,7 +74,7 @@ export function applyOpenrouterProviderConfig(cfg: ClawdbotConfig): ClawdbotConf
   };
 }
 
-export function applyVercelAiGatewayProviderConfig(cfg: ClawdbotConfig): ClawdbotConfig {
+export function applyVercelAiGatewayProviderConfig(cfg: MoltbotConfig): MoltbotConfig {
   const models = { ...cfg.agents?.defaults?.models };
   models[VERCEL_AI_GATEWAY_DEFAULT_MODEL_REF] = {
     ...models[VERCEL_AI_GATEWAY_DEFAULT_MODEL_REF],
@@ -87,7 +93,7 @@ export function applyVercelAiGatewayProviderConfig(cfg: ClawdbotConfig): Clawdbo
   };
 }
 
-export function applyVercelAiGatewayConfig(cfg: ClawdbotConfig): ClawdbotConfig {
+export function applyVercelAiGatewayConfig(cfg: MoltbotConfig): MoltbotConfig {
   const next = applyVercelAiGatewayProviderConfig(cfg);
   const existingModel = next.agents?.defaults?.model;
   return {
@@ -109,7 +115,7 @@ export function applyVercelAiGatewayConfig(cfg: ClawdbotConfig): ClawdbotConfig 
   };
 }
 
-export function applyOpenrouterConfig(cfg: ClawdbotConfig): ClawdbotConfig {
+export function applyOpenrouterConfig(cfg: MoltbotConfig): MoltbotConfig {
   const next = applyOpenrouterProviderConfig(cfg);
   const existingModel = next.agents?.defaults?.model;
   return {
@@ -131,7 +137,7 @@ export function applyOpenrouterConfig(cfg: ClawdbotConfig): ClawdbotConfig {
   };
 }
 
-export function applyMoonshotProviderConfig(cfg: ClawdbotConfig): ClawdbotConfig {
+export function applyMoonshotProviderConfig(cfg: MoltbotConfig): MoltbotConfig {
   const models = { ...cfg.agents?.defaults?.models };
   models[MOONSHOT_DEFAULT_MODEL_REF] = {
     ...models[MOONSHOT_DEFAULT_MODEL_REF],
@@ -174,7 +180,7 @@ export function applyMoonshotProviderConfig(cfg: ClawdbotConfig): ClawdbotConfig
   };
 }
 
-export function applyMoonshotConfig(cfg: ClawdbotConfig): ClawdbotConfig {
+export function applyMoonshotConfig(cfg: MoltbotConfig): MoltbotConfig {
   const next = applyMoonshotProviderConfig(cfg);
   const existingModel = next.agents?.defaults?.model;
   return {
@@ -196,7 +202,7 @@ export function applyMoonshotConfig(cfg: ClawdbotConfig): ClawdbotConfig {
   };
 }
 
-export function applyKimiCodeProviderConfig(cfg: ClawdbotConfig): ClawdbotConfig {
+export function applyKimiCodeProviderConfig(cfg: MoltbotConfig): MoltbotConfig {
   const models = { ...cfg.agents?.defaults?.models };
   models[KIMI_CODE_MODEL_REF] = {
     ...models[KIMI_CODE_MODEL_REF],
@@ -239,7 +245,7 @@ export function applyKimiCodeProviderConfig(cfg: ClawdbotConfig): ClawdbotConfig
   };
 }
 
-export function applyKimiCodeConfig(cfg: ClawdbotConfig): ClawdbotConfig {
+export function applyKimiCodeConfig(cfg: MoltbotConfig): MoltbotConfig {
   const next = applyKimiCodeProviderConfig(cfg);
   const existingModel = next.agents?.defaults?.model;
   return {
@@ -261,7 +267,7 @@ export function applyKimiCodeConfig(cfg: ClawdbotConfig): ClawdbotConfig {
   };
 }
 
-export function applySyntheticProviderConfig(cfg: ClawdbotConfig): ClawdbotConfig {
+export function applySyntheticProviderConfig(cfg: MoltbotConfig): MoltbotConfig {
   const models = { ...cfg.agents?.defaults?.models };
   models[SYNTHETIC_DEFAULT_MODEL_REF] = {
     ...models[SYNTHETIC_DEFAULT_MODEL_REF],
@@ -308,7 +314,7 @@ export function applySyntheticProviderConfig(cfg: ClawdbotConfig): ClawdbotConfi
   };
 }
 
-export function applySyntheticConfig(cfg: ClawdbotConfig): ClawdbotConfig {
+export function applySyntheticConfig(cfg: MoltbotConfig): MoltbotConfig {
   const next = applySyntheticProviderConfig(cfg);
   const existingModel = next.agents?.defaults?.model;
   return {
@@ -330,8 +336,83 @@ export function applySyntheticConfig(cfg: ClawdbotConfig): ClawdbotConfig {
   };
 }
 
+/**
+ * Apply Venice provider configuration without changing the default model.
+ * Registers Venice models and sets up the provider, but preserves existing model selection.
+ */
+export function applyVeniceProviderConfig(cfg: MoltbotConfig): MoltbotConfig {
+  const models = { ...cfg.agents?.defaults?.models };
+  models[VENICE_DEFAULT_MODEL_REF] = {
+    ...models[VENICE_DEFAULT_MODEL_REF],
+    alias: models[VENICE_DEFAULT_MODEL_REF]?.alias ?? "Llama 3.3 70B",
+  };
+
+  const providers = { ...cfg.models?.providers };
+  const existingProvider = providers.venice;
+  const existingModels = Array.isArray(existingProvider?.models) ? existingProvider.models : [];
+  const veniceModels = VENICE_MODEL_CATALOG.map(buildVeniceModelDefinition);
+  const mergedModels = [
+    ...existingModels,
+    ...veniceModels.filter((model) => !existingModels.some((existing) => existing.id === model.id)),
+  ];
+  const { apiKey: existingApiKey, ...existingProviderRest } = (existingProvider ?? {}) as Record<
+    string,
+    unknown
+  > as { apiKey?: string };
+  const resolvedApiKey = typeof existingApiKey === "string" ? existingApiKey : undefined;
+  const normalizedApiKey = resolvedApiKey?.trim();
+  providers.venice = {
+    ...existingProviderRest,
+    baseUrl: VENICE_BASE_URL,
+    api: "openai-completions",
+    ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
+    models: mergedModels.length > 0 ? mergedModels : veniceModels,
+  };
+
+  return {
+    ...cfg,
+    agents: {
+      ...cfg.agents,
+      defaults: {
+        ...cfg.agents?.defaults,
+        models,
+      },
+    },
+    models: {
+      mode: cfg.models?.mode ?? "merge",
+      providers,
+    },
+  };
+}
+
+/**
+ * Apply Venice provider configuration AND set Venice as the default model.
+ * Use this when Venice is the primary provider choice during onboarding.
+ */
+export function applyVeniceConfig(cfg: MoltbotConfig): MoltbotConfig {
+  const next = applyVeniceProviderConfig(cfg);
+  const existingModel = next.agents?.defaults?.model;
+  return {
+    ...next,
+    agents: {
+      ...next.agents,
+      defaults: {
+        ...next.agents?.defaults,
+        model: {
+          ...(existingModel && "fallbacks" in (existingModel as Record<string, unknown>)
+            ? {
+                fallbacks: (existingModel as { fallbacks?: string[] }).fallbacks,
+              }
+            : undefined),
+          primary: VENICE_DEFAULT_MODEL_REF,
+        },
+      },
+    },
+  };
+}
+
 export function applyAuthProfileConfig(
-  cfg: ClawdbotConfig,
+  cfg: MoltbotConfig,
   params: {
     profileId: string;
     provider: string;
@@ -339,7 +420,7 @@ export function applyAuthProfileConfig(
     email?: string;
     preferProfileFirst?: boolean;
   },
-): ClawdbotConfig {
+): MoltbotConfig {
   const profiles = {
     ...cfg.auth?.profiles,
     [params.profileId]: {

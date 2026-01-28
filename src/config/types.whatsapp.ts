@@ -6,7 +6,7 @@ import type {
 } from "./types.base.js";
 import type { ChannelHeartbeatVisibilityConfig } from "./types.channels.js";
 import type { DmConfig } from "./types.messages.js";
-import type { GroupToolPolicyConfig } from "./types.tools.js";
+import type { GroupToolPolicyBySenderConfig, GroupToolPolicyConfig } from "./types.tools.js";
 
 export type WhatsAppActionConfig = {
   reactions?: boolean;
@@ -27,7 +27,7 @@ export type WhatsAppConfig = {
   sendReadReceipts?: boolean;
   /**
    * Inbound message prefix (WhatsApp only).
-   * Default: `[{agents.list[].identity.name}]` (or `[clawdbot]`) when allowFrom is empty, else `""`.
+   * Default: `[{agents.list[].identity.name}]` (or `[moltbot]`) when allowFrom is empty, else `""`.
    */
   messagePrefix?: string;
   /** Direct message access policy (default: pairing). */
@@ -55,6 +55,8 @@ export type WhatsAppConfig = {
   dms?: Record<string, DmConfig>;
   /** Outbound text chunk size (chars). Default: 4000. */
   textChunkLimit?: number;
+  /** Chunking mode: "length" (default) splits by size; "newline" splits on every newline. */
+  chunkMode?: "length" | "newline";
   /** Maximum media file size in MB. Default: 50. */
   mediaMaxMb?: number;
   /** Disable block streaming for this account. */
@@ -68,6 +70,7 @@ export type WhatsAppConfig = {
     {
       requireMention?: boolean;
       tools?: GroupToolPolicyConfig;
+      toolsBySender?: GroupToolPolicyBySenderConfig;
     }
   >;
   /** Acknowledgment reaction sent immediately upon message receipt. */
@@ -122,6 +125,8 @@ export type WhatsAppAccountConfig = {
   /** Per-DM config overrides keyed by user ID. */
   dms?: Record<string, DmConfig>;
   textChunkLimit?: number;
+  /** Chunking mode: "length" (default) splits by size; "newline" splits on every newline. */
+  chunkMode?: "length" | "newline";
   mediaMaxMb?: number;
   blockStreaming?: boolean;
   /** Merge streamed block replies before sending. */
@@ -131,6 +136,7 @@ export type WhatsAppAccountConfig = {
     {
       requireMention?: boolean;
       tools?: GroupToolPolicyConfig;
+      toolsBySender?: GroupToolPolicyBySenderConfig;
     }
   >;
   /** Acknowledgment reaction sent immediately upon message receipt. */

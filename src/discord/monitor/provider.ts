@@ -1,3 +1,4 @@
+import { inspect } from "node:util";
 import { Client } from "@buape/carbon";
 import { GatewayIntents, GatewayPlugin } from "@buape/carbon/gateway";
 import { Routes } from "discord-api-types/v10";
@@ -11,7 +12,7 @@ import {
   resolveNativeCommandsEnabled,
   resolveNativeSkillsEnabled,
 } from "../../config/commands.js";
-import type { ClawdbotConfig, ReplyToMode } from "../../config/config.js";
+import type { MoltbotConfig, ReplyToMode } from "../../config/config.js";
 import { loadConfig } from "../../config/config.js";
 import { danger, logVerbose, shouldLogVerbose, warn } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -27,6 +28,7 @@ import { resolveDiscordUserAllowlist } from "../resolve-users.js";
 import { normalizeDiscordToken } from "../token.js";
 import {
   DiscordMessageListener,
+  DiscordPresenceListener,
   DiscordReactionListener,
   DiscordReactionRemoveListener,
   registerDiscordListener,
@@ -36,11 +38,12 @@ import {
   createDiscordCommandArgFallbackButton,
   createDiscordNativeCommand,
 } from "./native-command.js";
+import { createExecApprovalButton, DiscordExecApprovalHandler } from "./exec-approvals.js";
 
 export type MonitorDiscordOpts = {
   token?: string;
   accountId?: string;
-  config?: ClawdbotConfig;
+  config?: MoltbotConfig;
   runtime?: RuntimeEnv;
   abortSignal?: AbortSignal;
   mediaMaxMb?: number;
@@ -73,10 +76,57 @@ async function deployDiscordCommands(params: {
   try {
     await runWithRetry(() => params.client.handleDeployRequest(), "command deploy");
   } catch (err) {
+    const details = formatDiscordDeployErrorDetails(err);
     params.runtime.error?.(
-      danger(`discord: failed to deploy native commands: ${formatErrorMessage(err)}`),
+      danger(`discord: failed to deploy native commands: ${formatErrorMessage(err)}${details}`),
     );
   }
+}
+
+function formatDiscordDeployErrorDetails(err: unknown): string {
+  if (!err || typeof err !== "object") return "";
+  const status = (err as { status?: unknown }).status;
+  const discordCode = (err as { discordCode?: unknown }).discordCode;
+  const rawBody = (err as { rawBody?: unknown }).rawBody;
+  const details: string[] = [];
+  if (typeof status === "number") details.push(`status=${status}`);
+  if (typeof discordCode === "number" || typeof discordCode === "string") {
+    details.push(`code=${discordCode}`);
+  }
+  if (rawBody !== undefined) {
+    let bodyText = "";
+    try {
+      bodyText = JSON.stringify(rawBody);
+    } catch {
+      bodyText =
+        typeof rawBody === "string" ? rawBody : inspect(rawBody, { depth: 3, breakLength: 120 });
+    }
+    if (bodyText) {
+      const maxLen = 800;
+      const trimmed = bodyText.length > maxLen ? `${bodyText.slice(0, maxLen)}...` : bodyText;
+      details.push(`body=${trimmed}`);
+    }
+  }
+  return details.length > 0 ? ` (${details.join(", ")})` : "";
+}
+
+function resolveDiscordGatewayIntents(
+  intentsConfig?: import("../../config/types.discord.js").DiscordIntentsConfig,
+): number {
+  let intents =
+    GatewayIntents.Guilds |
+    GatewayIntents.GuildMessages |
+    GatewayIntents.MessageContent |
+    GatewayIntents.DirectMessages |
+    GatewayIntents.GuildMessageReactions |
+    GatewayIntents.DirectMessageReactions;
+  if (intentsConfig?.presence) {
+    intents |= GatewayIntents.GuildPresences;
+  }
+  if (intentsConfig?.guildMembers) {
+    intents |= GatewayIntents.GuildMembers;
+  }
+  return intents;
 }
 
 export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
@@ -377,6 +427,31 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     }),
   );
 
+  // Initialize exec approvals handler if enabled
+  const execApprovalsConfig = discordCfg.execApprovals ?? {};
+  const execApprovalsHandler = execApprovalsConfig.enabled
+    ? new DiscordExecApprovalHandler({
+        token,
+        accountId: account.accountId,
+        config: execApprovalsConfig,
+        cfg,
+        runtime,
+      })
+    : null;
+
+  const components = [
+    createDiscordCommandArgFallbackButton({
+      cfg,
+      discordConfig: discordCfg,
+      accountId: account.accountId,
+      sessionPrefix,
+    }),
+  ];
+
+  if (execApprovalsHandler) {
+    components.push(createExecApprovalButton({ handler: execApprovalsHandler }));
+  }
+
   const client = new Client(
     {
       baseUrl: "http://localhost",
@@ -389,27 +464,14 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     {
       commands,
       listeners: [],
-      components: [
-        createDiscordCommandArgFallbackButton({
-          cfg,
-          discordConfig: discordCfg,
-          accountId: account.accountId,
-          sessionPrefix,
-        }),
-      ],
+      components,
     },
     [
       new GatewayPlugin({
         reconnect: {
           maxAttempts: Number.POSITIVE_INFINITY,
         },
-        intents:
-          GatewayIntents.Guilds |
-          GatewayIntents.GuildMessages |
-          GatewayIntents.MessageContent |
-          GatewayIntents.DirectMessages |
-          GatewayIntents.GuildMessageReactions |
-          GatewayIntents.DirectMessageReactions,
+        intents: resolveDiscordGatewayIntents(discordCfg.intents),
         autoInteractions: true,
       }),
     ],
@@ -479,7 +541,20 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     }),
   );
 
+  if (discordCfg.intents?.presence) {
+    registerDiscordListener(
+      client.listeners,
+      new DiscordPresenceListener({ logger, accountId: account.accountId }),
+    );
+    runtime.log?.("discord: GuildPresences intent enabled — presence listener registered");
+  }
+
   runtime.log?.(`logged in to discord${botUserId ? ` as ${botUserId}` : ""}`);
+
+  // Start exec approvals handler after client is ready
+  if (execApprovalsHandler) {
+    await execApprovalsHandler.start();
+  }
 
   const gateway = client.getPlugin<GatewayPlugin>("gateway");
   const gatewayEmitter = getDiscordGatewayEmitter(gateway);
@@ -546,6 +621,9 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
     if (helloTimeoutId) clearTimeout(helloTimeoutId);
     gatewayEmitter?.removeListener("debug", onGatewayDebug);
     abortSignal?.removeEventListener("abort", onAbort);
+    if (execApprovalsHandler) {
+      await execApprovalsHandler.stop();
+    }
   }
 }
 

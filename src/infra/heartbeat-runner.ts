@@ -22,7 +22,7 @@ import type { ReplyPayload } from "../auto-reply/types.js";
 import { getChannelPlugin } from "../channels/plugins/index.js";
 import type { ChannelHeartbeatDeps } from "../channels/plugins/types.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
-import type { ClawdbotConfig } from "../config/config.js";
+import type { MoltbotConfig } from "../config/config.js";
 import { loadConfig } from "../config/config.js";
 import {
   canonicalizeMainSessionAlias,
@@ -35,6 +35,7 @@ import {
 } from "../config/sessions.js";
 import type { AgentDefaultsConfig } from "../config/types.agent-defaults.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import { peekSystemEvents } from "../infra/system-events.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getQueueSize } from "../process/command-queue.js";
 import { CommandLane } from "../process/lanes.js";
@@ -88,7 +89,15 @@ export type HeartbeatSummary = {
 const DEFAULT_HEARTBEAT_TARGET = "last";
 const ACTIVE_HOURS_TIME_PATTERN = /^([01]\d|2[0-3]|24):([0-5]\d)$/;
 
-function resolveActiveHoursTimezone(cfg: ClawdbotConfig, raw?: string): string {
+// Prompt used when an async exec has completed and the result should be relayed to the user.
+// This overrides the standard heartbeat prompt to ensure the model responds with the exec result
+// instead of just "HEARTBEAT_OK".
+const EXEC_EVENT_PROMPT =
+  "An async command you ran earlier has completed. The result is shown in the system messages above. " +
+  "Please relay the command output to the user in a helpful way. If the command succeeded, share the relevant output. " +
+  "If it failed, explain what went wrong.";
+
+function resolveActiveHoursTimezone(cfg: MoltbotConfig, raw?: string): string {
   const trimmed = raw?.trim();
   if (!trimmed || trimmed === "user") {
     return resolveUserTimezone(cfg.agents?.defaults?.userTimezone);
@@ -140,7 +149,7 @@ function resolveMinutesInTimeZone(nowMs: number, timeZone: string): number | nul
 }
 
 function isWithinActiveHours(
-  cfg: ClawdbotConfig,
+  cfg: MoltbotConfig,
   heartbeat?: HeartbeatConfig,
   nowMs?: number,
 ): boolean {
@@ -172,15 +181,15 @@ type HeartbeatAgentState = {
 
 export type HeartbeatRunner = {
   stop: () => void;
-  updateConfig: (cfg: ClawdbotConfig) => void;
+  updateConfig: (cfg: MoltbotConfig) => void;
 };
 
-function hasExplicitHeartbeatAgents(cfg: ClawdbotConfig) {
+function hasExplicitHeartbeatAgents(cfg: MoltbotConfig) {
   const list = cfg.agents?.list ?? [];
   return list.some((entry) => Boolean(entry?.heartbeat));
 }
 
-export function isHeartbeatEnabledForAgent(cfg: ClawdbotConfig, agentId?: string): boolean {
+export function isHeartbeatEnabledForAgent(cfg: MoltbotConfig, agentId?: string): boolean {
   const resolvedAgentId = normalizeAgentId(agentId ?? resolveDefaultAgentId(cfg));
   const list = cfg.agents?.list ?? [];
   const hasExplicit = hasExplicitHeartbeatAgents(cfg);
@@ -192,10 +201,7 @@ export function isHeartbeatEnabledForAgent(cfg: ClawdbotConfig, agentId?: string
   return resolvedAgentId === resolveDefaultAgentId(cfg);
 }
 
-function resolveHeartbeatConfig(
-  cfg: ClawdbotConfig,
-  agentId?: string,
-): HeartbeatConfig | undefined {
+function resolveHeartbeatConfig(cfg: MoltbotConfig, agentId?: string): HeartbeatConfig | undefined {
   const defaults = cfg.agents?.defaults?.heartbeat;
   if (!agentId) return defaults;
   const overrides = resolveAgentConfig(cfg, agentId)?.heartbeat;
@@ -204,7 +210,7 @@ function resolveHeartbeatConfig(
 }
 
 export function resolveHeartbeatSummaryForAgent(
-  cfg: ClawdbotConfig,
+  cfg: MoltbotConfig,
   agentId?: string,
 ): HeartbeatSummary {
   const defaults = cfg.agents?.defaults?.heartbeat;
@@ -251,7 +257,7 @@ export function resolveHeartbeatSummaryForAgent(
   };
 }
 
-function resolveHeartbeatAgents(cfg: ClawdbotConfig): HeartbeatAgent[] {
+function resolveHeartbeatAgents(cfg: MoltbotConfig): HeartbeatAgent[] {
   const list = cfg.agents?.list ?? [];
   if (hasExplicitHeartbeatAgents(cfg)) {
     return list
@@ -267,7 +273,7 @@ function resolveHeartbeatAgents(cfg: ClawdbotConfig): HeartbeatAgent[] {
 }
 
 export function resolveHeartbeatIntervalMs(
-  cfg: ClawdbotConfig,
+  cfg: MoltbotConfig,
   overrideEvery?: string,
   heartbeat?: HeartbeatConfig,
 ) {
@@ -289,11 +295,11 @@ export function resolveHeartbeatIntervalMs(
   return ms;
 }
 
-export function resolveHeartbeatPrompt(cfg: ClawdbotConfig, heartbeat?: HeartbeatConfig) {
+export function resolveHeartbeatPrompt(cfg: MoltbotConfig, heartbeat?: HeartbeatConfig) {
   return resolveHeartbeatPromptText(heartbeat?.prompt ?? cfg.agents?.defaults?.heartbeat?.prompt);
 }
 
-function resolveHeartbeatAckMaxChars(cfg: ClawdbotConfig, heartbeat?: HeartbeatConfig) {
+function resolveHeartbeatAckMaxChars(cfg: MoltbotConfig, heartbeat?: HeartbeatConfig) {
   return Math.max(
     0,
     heartbeat?.ackMaxChars ??
@@ -303,7 +309,7 @@ function resolveHeartbeatAckMaxChars(cfg: ClawdbotConfig, heartbeat?: HeartbeatC
 }
 
 function resolveHeartbeatSession(
-  cfg: ClawdbotConfig,
+  cfg: MoltbotConfig,
   agentId?: string,
   heartbeat?: HeartbeatConfig,
 ) {
@@ -422,7 +428,7 @@ function normalizeHeartbeatReply(
 }
 
 export async function runHeartbeatOnce(opts: {
-  cfg?: ClawdbotConfig;
+  cfg?: MoltbotConfig;
   agentId?: string;
   heartbeat?: HeartbeatConfig;
   reason?: string;
@@ -453,11 +459,13 @@ export async function runHeartbeatOnce(opts: {
 
   // Skip heartbeat if HEARTBEAT.md exists but has no actionable content.
   // This saves API calls/costs when the file is effectively empty (only comments/headers).
+  // EXCEPTION: Don't skip for exec events - they have pending system events to process.
+  const isExecEventReason = opts.reason === "exec-event";
   const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
   const heartbeatFilePath = path.join(workspaceDir, DEFAULT_HEARTBEAT_FILENAME);
   try {
     const heartbeatFileContent = await fs.readFile(heartbeatFilePath, "utf-8");
-    if (isHeartbeatContentEffectivelyEmpty(heartbeatFileContent)) {
+    if (isHeartbeatContentEffectivelyEmpty(heartbeatFileContent) && !isExecEventReason) {
       emitHeartbeatEvent({
         status: "skipped",
         reason: "empty-heartbeat-file",
@@ -483,12 +491,20 @@ export async function runHeartbeatOnce(opts: {
       : { showOk: false, showAlerts: true, useIndicator: true };
   const { sender } = resolveHeartbeatSenderContext({ cfg, entry, delivery });
   const responsePrefix = resolveEffectiveMessagesConfig(cfg, agentId).responsePrefix;
-  const prompt = resolveHeartbeatPrompt(cfg, heartbeat);
+
+  // Check if this is an exec event with pending exec completion system events.
+  // If so, use a specialized prompt that instructs the model to relay the result
+  // instead of the standard heartbeat prompt with "reply HEARTBEAT_OK".
+  const isExecEvent = opts.reason === "exec-event";
+  const pendingEvents = isExecEvent ? peekSystemEvents(sessionKey) : [];
+  const hasExecCompletion = pendingEvents.some((evt) => evt.includes("Exec finished"));
+
+  const prompt = hasExecCompletion ? EXEC_EVENT_PROMPT : resolveHeartbeatPrompt(cfg, heartbeat);
   const ctx = {
     Body: prompt,
     From: sender,
     To: sender,
-    Provider: "heartbeat",
+    Provider: hasExecCompletion ? "exec-event" : "heartbeat",
     SessionKey: sessionKey,
   };
   if (!visibility.showAlerts && !visibility.showOk && !visibility.useIndicator) {
@@ -558,7 +574,19 @@ export async function runHeartbeatOnce(opts: {
 
     const ackMaxChars = resolveHeartbeatAckMaxChars(cfg, heartbeat);
     const normalized = normalizeHeartbeatReply(replyPayload, responsePrefix, ackMaxChars);
-    const shouldSkipMain = normalized.shouldSkip && !normalized.hasMedia;
+    // For exec completion events, don't skip even if the response looks like HEARTBEAT_OK.
+    // The model should be responding with exec results, not ack tokens.
+    // Also, if normalized.text is empty due to token stripping but we have exec completion,
+    // fall back to the original reply text.
+    const execFallbackText =
+      hasExecCompletion && !normalized.text.trim() && replyPayload.text?.trim()
+        ? replyPayload.text.trim()
+        : null;
+    if (execFallbackText) {
+      normalized.text = execFallbackText;
+      normalized.shouldSkip = false;
+    }
+    const shouldSkipMain = normalized.shouldSkip && !normalized.hasMedia && !hasExecCompletion;
     if (shouldSkipMain && reasoningPayloads.length === 0) {
       await restoreHeartbeatUpdatedAt({
         storePath,
@@ -727,7 +755,7 @@ export async function runHeartbeatOnce(opts: {
 }
 
 export function startHeartbeatRunner(opts: {
-  cfg?: ClawdbotConfig;
+  cfg?: MoltbotConfig;
   runtime?: RuntimeEnv;
   abortSignal?: AbortSignal;
   runOnce?: typeof runHeartbeatOnce;
@@ -773,7 +801,7 @@ export function startHeartbeatRunner(opts: {
     state.timer.unref?.();
   };
 
-  const updateConfig = (cfg: ClawdbotConfig) => {
+  const updateConfig = (cfg: MoltbotConfig) => {
     if (state.stopped) return;
     const now = Date.now();
     const prevAgents = state.agents;
