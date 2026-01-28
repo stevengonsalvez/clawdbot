@@ -8,7 +8,7 @@
 import type { WorkspaceBootstrapFile } from "../agents/workspace.js";
 import type { OpenClawConfig } from "../config/config.js";
 
-export type InternalHookEventType = "command" | "session" | "agent" | "gateway";
+export type InternalHookEventType = "command" | "session" | "agent" | "gateway" | "message";
 
 export type AgentBootstrapHookContext = {
   workspaceDir: string;
@@ -23,6 +23,45 @@ export type AgentBootstrapHookEvent = InternalHookEvent & {
   type: "agent";
   action: "bootstrap";
   context: AgentBootstrapHookContext;
+};
+
+/**
+ * Context for message:received hook events.
+ * Provides sender, content, channel, and rich metadata about the inbound message.
+ */
+export type MessageReceivedHookContext = {
+  /** Sender identifier (phone number, user ID, etc.) */
+  from: string;
+  /** Message content (text body) */
+  content: string;
+  /** Unix timestamp in milliseconds (if available) */
+  timestamp?: number;
+  /** Normalized channel identifier (e.g., "whatsapp", "telegram", "discord") */
+  channelId: string;
+  /** Account/bot ID if multi-account */
+  accountId?: string;
+  /** Conversation/chat ID */
+  conversationId?: string;
+  /** Additional metadata about the message */
+  metadata: {
+    to?: string;
+    provider?: string;
+    surface?: string;
+    threadId?: string;
+    originatingChannel?: string;
+    originatingTo?: string;
+    messageId?: string;
+    senderId?: string;
+    senderName?: string;
+    senderUsername?: string;
+    senderE164?: string;
+  };
+};
+
+export type MessageReceivedHookEvent = InternalHookEvent & {
+  type: "message";
+  action: "received";
+  context: MessageReceivedHookContext;
 };
 
 export interface InternalHookEvent {
@@ -178,4 +217,18 @@ export function isAgentBootstrapEvent(event: InternalHookEvent): event is AgentB
     return false;
   }
   return Array.isArray(context.bootstrapFiles);
+}
+
+/**
+ * Type guard for message:received events.
+ */
+export function isMessageReceivedEvent(
+  event: InternalHookEvent,
+): event is MessageReceivedHookEvent {
+  if (event.type !== "message" || event.action !== "received") return false;
+  const context = event.context as Partial<MessageReceivedHookContext> | null;
+  if (!context || typeof context !== "object") return false;
+  if (typeof context.from !== "string") return false;
+  if (typeof context.content !== "string") return false;
+  return typeof context.channelId === "string";
 }
