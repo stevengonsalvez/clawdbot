@@ -1,0 +1,448 @@
+#!/usr/bin/env prose
+# Sleep Cycle - Cognitive Maintenance Workflow
+# Run during inactivity to maintain agent health and consolidate memory
+
+@name: sleep-cycle
+@description: Full cognitive maintenance cycle with system health, memory consolidation, and self-improvement
+@version: 1.0.0
+
+# ============================================================================
+# INPUTS
+# ============================================================================
+
+input dry_run: bool = false {
+  description: "Preview changes without applying them"
+}
+
+input skip_deep: bool = false {
+  description: "Skip deep sleep (memory consolidation) phase"
+}
+
+input skip_improve: bool = false {
+  description: "Skip self-improvement phase"
+}
+
+input workspace: string = "~/d/popabot" {
+  description: "Agent workspace path"
+}
+
+input stale_days: int = 60 {
+  description: "Days before memory entries are considered stale"
+}
+
+# ============================================================================
+# PHASE 1: SHALLOW SLEEP (System Health)
+# ============================================================================
+
+step shallow_config_check {
+  description: "Validate configuration against schema"
+  
+  run: |
+    echo "🔍 Checking config validity..."
+    
+    # Get config and validate
+    CONFIG_STATUS=$(moltbot status --json 2>/dev/null | jq -r '.gateway.status // "unknown"')
+    
+    if [ "$CONFIG_STATUS" = "running" ]; then
+      echo "✅ Gateway running, config valid"
+      echo "config_valid=true"
+    else
+      echo "⚠️ Gateway status: $CONFIG_STATUS"
+      echo "config_valid=false"
+    fi
+}
+
+step shallow_integrations {
+  description: "Check integration health (channels, APIs)"
+  depends_on: [shallow_config_check]
+  
+  run: |
+    echo "🔌 Checking integrations..."
+    
+    STATUS_JSON=$(moltbot status --json 2>/dev/null)
+    
+    # Check WhatsApp
+    WA_STATUS=$(echo "$STATUS_JSON" | jq -r '.channels.whatsapp.status // "not_configured"')
+    echo "WhatsApp: $WA_STATUS"
+    
+    # Check Telegram
+    TG_STATUS=$(echo "$STATUS_JSON" | jq -r '.channels.telegram.status // "not_configured"')
+    echo "Telegram: $TG_STATUS"
+    
+    # Check Discord
+    DC_STATUS=$(echo "$STATUS_JSON" | jq -r '.channels.discord.status // "not_configured"')
+    echo "Discord: $DC_STATUS"
+    
+    # Summary
+    ISSUES=""
+    [ "$WA_STATUS" = "disconnected" ] && ISSUES="$ISSUES WhatsApp"
+    [ "$TG_STATUS" = "disconnected" ] && ISSUES="$ISSUES Telegram"
+    [ "$DC_STATUS" = "disconnected" ] && ISSUES="$ISSUES Discord"
+    
+    if [ -z "$ISSUES" ]; then
+      echo "✅ All configured integrations healthy"
+    else
+      echo "⚠️ Disconnected:$ISSUES"
+    fi
+}
+
+step shallow_updates {
+  description: "Check for available updates"
+  depends_on: [shallow_config_check]
+  
+  run: |
+    echo "📦 Checking for updates..."
+    
+    # Check npm for moltbot updates
+    CURRENT=$(moltbot --version 2>/dev/null | head -1)
+    echo "Current version: $CURRENT"
+    
+    # Note: actual update check would need npm outdated or similar
+    echo "ℹ️ Run 'moltbot update' to check for updates"
+    echo "updates_available=check_manually"
+}
+
+step shallow_logs {
+  description: "Scan logs for anomalies"
+  depends_on: [shallow_config_check]
+  
+  run: |
+    echo "📊 Analyzing recent logs..."
+    
+    LOG_DIR="$HOME/.clawdbot/logs"
+    
+    if [ -d "$LOG_DIR" ]; then
+      # Count errors in last 24 hours
+      ERROR_COUNT=$(find "$LOG_DIR" -name "*.log" -mtime -1 -exec grep -c "error\|Error\|ERROR" {} + 2>/dev/null | awk -F: '{sum+=$2} END {print sum+0}')
+      
+      echo "Errors in last 24h: $ERROR_COUNT"
+      
+      if [ "$ERROR_COUNT" -gt 50 ]; then
+        echo "⚠️ High error rate detected"
+        echo "anomaly_detected=true"
+      else
+        echo "✅ Error rate normal"
+        echo "anomaly_detected=false"
+      fi
+    else
+      echo "ℹ️ Log directory not found"
+    fi
+}
+
+step shallow_sessions {
+  description: "Check for stuck or orphaned sessions"
+  depends_on: [shallow_config_check]
+  
+  run: |
+    echo "🔄 Checking session health..."
+    
+    # List active exec sessions
+    SESSIONS=$(moltbot exec list --json 2>/dev/null | jq -r '.sessions | length // 0')
+    echo "Active exec sessions: $SESSIONS"
+    
+    # Check for very old sessions (>24h)
+    OLD_SESSIONS=$(moltbot exec list --json 2>/dev/null | jq -r '[.sessions[] | select(.age_hours > 24)] | length // 0')
+    
+    if [ "$OLD_SESSIONS" -gt 0 ]; then
+      echo "⚠️ Found $OLD_SESSIONS sessions older than 24h"
+      echo "stale_sessions=$OLD_SESSIONS"
+    else
+      echo "✅ No stale sessions"
+      echo "stale_sessions=0"
+    fi
+}
+
+step shallow_cleanup {
+  description: "Clean up temporary resources"
+  depends_on: [shallow_sessions]
+  
+  run: |
+    echo "🧹 Cleaning up resources..."
+    
+    DRY_RUN="${{ inputs.dry_run }}"
+    CLEANED=0
+    
+    # Clean old temp files (>7 days)
+    TEMP_DIR="/tmp"
+    if [ "$DRY_RUN" = "true" ]; then
+      OLD_TEMPS=$(find "$TEMP_DIR" -name "tts-*" -o -name "trump-*" -mtime +7 2>/dev/null | wc -l)
+      echo "Would clean $OLD_TEMPS old temp files (dry run)"
+    else
+      OLD_TEMPS=$(find "$TEMP_DIR" -name "tts-*" -o -name "trump-*" -mtime +7 -delete 2>/dev/null | wc -l)
+      echo "Cleaned old temp files"
+    fi
+    
+    # Clean old inbound media (>30 days)
+    MEDIA_DIR="$HOME/.clawdbot/media/inbound"
+    if [ -d "$MEDIA_DIR" ]; then
+      OLD_MEDIA=$(find "$MEDIA_DIR" -type f -mtime +30 2>/dev/null | wc -l)
+      echo "Old media files (>30 days): $OLD_MEDIA"
+      
+      if [ "$DRY_RUN" != "true" ] && [ "$OLD_MEDIA" -gt 0 ]; then
+        # Archive rather than delete
+        ARCHIVE_DIR="$HOME/.clawdbot/media/archive/$(date +%Y-%m)"
+        mkdir -p "$ARCHIVE_DIR"
+        find "$MEDIA_DIR" -type f -mtime +30 -exec mv {} "$ARCHIVE_DIR/" \; 2>/dev/null
+        echo "Archived $OLD_MEDIA files to $ARCHIVE_DIR"
+      fi
+    fi
+    
+    echo "✅ Cleanup complete"
+}
+
+# ============================================================================
+# PHASE 2: DEEP SLEEP (Memory Consolidation)
+# ============================================================================
+
+step deep_scan_memory {
+  description: "Scan memory files for analysis"
+  depends_on: [shallow_cleanup]
+  condition: "!inputs.skip_deep"
+  
+  run: |
+    echo "🧠 Scanning memory files..."
+    
+    WORKSPACE="${{ inputs.workspace }}"
+    WORKSPACE=$(eval echo "$WORKSPACE")  # Expand ~
+    MEMORY_DIR="$WORKSPACE/memory"
+    
+    if [ ! -d "$MEMORY_DIR" ]; then
+      echo "ℹ️ No memory directory found at $MEMORY_DIR"
+      exit 0
+    fi
+    
+    # Count files and total size
+    FILE_COUNT=$(find "$MEMORY_DIR" -name "*.md" -type f | wc -l)
+    TOTAL_SIZE=$(du -sh "$MEMORY_DIR" 2>/dev/null | cut -f1)
+    
+    echo "Memory files: $FILE_COUNT"
+    echo "Total size: $TOTAL_SIZE"
+    
+    # Find large files (potential verbose entries)
+    echo ""
+    echo "Large files (>10KB):"
+    find "$MEMORY_DIR" -name "*.md" -size +10k -exec ls -lh {} \; 2>/dev/null | awk '{print $5, $NF}'
+    
+    # Find old files
+    STALE_DAYS="${{ inputs.stale_days }}"
+    echo ""
+    echo "Files older than $STALE_DAYS days:"
+    find "$MEMORY_DIR" -name "*.md" -mtime +$STALE_DAYS -type f 2>/dev/null | head -10
+}
+
+step deep_analyze_entries {
+  description: "Analyze memory entries for consolidation opportunities"
+  depends_on: [deep_scan_memory]
+  condition: "!inputs.skip_deep"
+  
+  prompt: |
+    Analyze the memory files in the workspace and identify:
+    
+    1. **Verbose entries** that could be compressed into concise facts
+    2. **Duplicate/redundant entries** across files
+    3. **Stale entries** (old, no longer relevant)
+    4. **Patterns** that should be promoted to MEMORY.md core
+    
+    Workspace: {{ inputs.workspace }}
+    
+    Read the memory files and provide a structured analysis:
+    - List specific entries to compress (with proposed compressed version)
+    - List duplicates to merge
+    - List stale entries to flag for review
+    - List patterns to promote to core memory
+    
+    Output as JSON:
+    ```json
+    {
+      "compress": [{"file": "...", "original": "...", "compressed": "..."}],
+      "duplicates": [{"files": [...], "content": "...", "merged": "..."}],
+      "stale": [{"file": "...", "entry": "...", "reason": "..."}],
+      "promote": [{"pattern": "...", "proposed_core_entry": "..."}]
+    }
+    ```
+}
+
+step deep_propose_changes {
+  description: "Generate proposed memory changes"
+  depends_on: [deep_analyze_entries]
+  condition: "!inputs.skip_deep"
+  
+  prompt: |
+    Based on the memory analysis, generate a summary of proposed changes.
+    
+    Format as a markdown checklist that the user can review:
+    
+    ## Memory Consolidation Proposals
+    
+    ### Compress (verbose → concise)
+    - [ ] File: ... | Original: "..." → Proposed: "..."
+    
+    ### Merge Duplicates  
+    - [ ] Merge entries from [...] into single entry: "..."
+    
+    ### Flag for Review (stale)
+    - [ ] File: ... | Entry: "..." | Reason: ...
+    
+    ### Promote to Core Memory
+    - [ ] Add to MEMORY.md: "..."
+    
+    Do NOT apply changes - just list the proposals for user review.
+}
+
+# ============================================================================
+# PHASE 3: SELF-IMPROVEMENT
+# ============================================================================
+
+step improve_mine_corrections {
+  description: "Mine session transcripts for user corrections"
+  depends_on: [deep_propose_changes]
+  condition: "!inputs.skip_improve"
+  
+  prompt: |
+    Search recent session transcripts for instances where the user corrected the agent.
+    
+    Look for patterns like:
+    - "No, do X not Y"
+    - "That's wrong, it should be..."
+    - "Use X instead"
+    - "I told you to..."
+    - Repeated clarifications
+    
+    Session logs location: ~/.clawdbot/agents/main/sessions/
+    
+    For each correction found, extract:
+    1. What the agent did wrong
+    2. What the correct behavior should be
+    3. A proposed learning/rule
+    
+    Output as:
+    ```json
+    {
+      "corrections": [
+        {
+          "context": "...",
+          "wrong": "...",
+          "correct": "...",
+          "learning": "..."
+        }
+      ]
+    }
+    ```
+}
+
+step improve_extract_preferences {
+  description: "Extract implicit user preferences"
+  depends_on: [improve_mine_corrections]
+  condition: "!inputs.skip_improve"
+  
+  prompt: |
+    Analyze recent interactions to identify user preferences that aren't yet recorded in memory.
+    
+    Look for:
+    - Repeated requests for specific formats
+    - Tool preferences ("use X for Y")
+    - Communication style preferences
+    - Time/scheduling patterns
+    - Workflow preferences
+    
+    Cross-reference with existing MEMORY.md and USER.md to avoid duplicates.
+    
+    Output new preferences discovered:
+    ```json
+    {
+      "preferences": [
+        {
+          "category": "...",
+          "preference": "...",
+          "evidence": "...",
+          "proposed_memory_entry": "..."
+        }
+      ]
+    }
+    ```
+}
+
+step improve_propose_learnings {
+  description: "Propose additions to SOUL.md and TOOLS.md"
+  depends_on: [improve_extract_preferences]
+  condition: "!inputs.skip_improve"
+  
+  prompt: |
+    Based on corrections and preferences extracted, propose additions to:
+    
+    1. **TOOLS.md** - Tool usage notes, gotchas, best practices
+    2. **SOUL.md** - Behavioral boundaries, communication style updates
+    
+    Only propose additions that would prevent future mistakes or improve interactions.
+    
+    Format:
+    
+    ## Proposed TOOLS.md Additions
+    - [ ] Add: "..."
+    
+    ## Proposed SOUL.md Additions  
+    - [ ] Add: "..."
+    
+    Include rationale for each proposal.
+}
+
+# ============================================================================
+# PHASE 4: GENERATE REPORT
+# ============================================================================
+
+step generate_report {
+  description: "Generate sleep report"
+  depends_on: [shallow_cleanup, deep_propose_changes, improve_propose_learnings]
+  
+  prompt: |
+    Generate the final sleep report combining all phases.
+    
+    Use this template:
+    
+    # Sleep Report — {{ current_date }}
+    
+    ## System Health (Shallow Sleep)
+    - Config: [status]
+    - Integrations: [status for each]
+    - Updates: [available/none]
+    - Anomalies: [detected/none]
+    - Sessions: [healthy/issues]
+    - Cleanup: [actions taken]
+    
+    ## Memory Consolidation (Deep Sleep)
+    - Files scanned: X
+    - Compress proposals: X entries
+    - Duplicates found: X
+    - Stale flagged: X entries
+    - Promote to core: X patterns
+    
+    ## Self-Improvement
+    - Corrections mined: X
+    - Preferences extracted: X
+    - TOOLS.md proposals: X
+    - SOUL.md proposals: X
+    
+    ## Proposed Changes (Require Approval)
+    [List all proposals with checkboxes]
+    
+    ## Recommendations
+    [Any immediate actions needed]
+    
+    ---
+    *Sleep cycle completed at [time]. Review proposals and approve changes.*
+    
+    Save this report to: {{ inputs.workspace }}/memory/sleep-reports/{{ current_date }}.md
+}
+
+step notify_completion {
+  description: "Notify that sleep cycle is complete"
+  depends_on: [generate_report]
+  
+  run: |
+    echo ""
+    echo "🌙 Sleep cycle complete!"
+    echo ""
+    echo "Report saved to: ${{ inputs.workspace }}/memory/sleep-reports/$(date +%Y-%m-%d).md"
+    echo ""
+    echo "Review the proposals and approve changes as needed."
+}

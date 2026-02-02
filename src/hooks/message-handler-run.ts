@@ -4,15 +4,15 @@
  */
 
 import type { CliDeps } from "../cli/outbound-send-deps.js";
-import type { MoltbotConfig } from "../config/config.js";
+import type { OpenClawConfig } from "../config/config.js";
 import type { MessageHandlerConfig } from "../config/types.hooks.js";
-import { runCronIsolatedAgentTurn } from "../cron/isolated-agent/run.js";
 import type { CronJob, CronMessageChannel } from "../cron/types.js";
-import { logWarn } from "../logger.js";
 import type { MessageReceivedHookContext } from "./internal-hooks.js";
+import { runCronIsolatedAgentTurn } from "../cron/isolated-agent/run.js";
+import { logWarn } from "../logger.js";
 
 export type RunMessageHandlerParams = {
-  cfg: MoltbotConfig;
+  cfg: OpenClawConfig;
   deps: CliDeps;
   handler: MessageHandlerConfig;
   context: MessageReceivedHookContext;
