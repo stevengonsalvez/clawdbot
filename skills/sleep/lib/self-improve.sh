@@ -213,8 +213,9 @@ while IFS= read -r session_file; do
   SESSION_NAME=$(basename "$session_file" .jsonl)
   
   for pattern in "${SUCCESS_PATTERNS[@]}"; do
-    # Count positive feedback
-    COUNT=$(jq -r 'select(.role == "user") | .content // ""' "$session_file" 2>/dev/null | grep -ci "$pattern" || echo "0")
+    # Count positive feedback (sanitize to ensure integer)
+    COUNT=$(jq -r 'select(.role == "user") | .content // ""' "$session_file" 2>/dev/null | grep -ci "$pattern" 2>/dev/null || echo "0")
+    COUNT=$(echo "$COUNT" | tr -d '[:space:]' | grep -E '^[0-9]+$' || echo "0")
     
     if [ "$COUNT" -gt 0 ]; then
       echo "$SESSION_NAME|$pattern|$COUNT" >> "$TEMP_SUCCESS"
