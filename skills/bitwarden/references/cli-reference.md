@@ -34,15 +34,14 @@ bw login user@example.com
 ### Unlock (required after login)
 
 ```bash
-# Interactive
+# Interactive (preferred)
 bw unlock
 
-# Non-interactive
-export BW_SESSION=$(bw unlock "master-password" --raw)
-
-# Via env var
-export BW_MASTER_PASSWORD="master-password"
+# Non-interactive via env var
+# ⚠️ Never pass master password as a CLI argument — visible in `ps aux`
+read -s BW_MASTER_PASSWORD && export BW_MASTER_PASSWORD
 export BW_SESSION=$(bw unlock --passwordenv BW_MASTER_PASSWORD --raw)
+unset BW_MASTER_PASSWORD  # Don't leave this set
 ```
 
 ## Common Operations
@@ -113,9 +112,9 @@ bw get template item | jq \
 
 ## Environment Variables
 
-| Variable             | Purpose                               |
-| -------------------- | ------------------------------------- |
-| `BW_SESSION`         | Session token (from unlock)           |
-| `BW_CLIENTID`        | API key client ID                     |
-| `BW_CLIENTSECRET`    | API key client secret                 |
-| `BW_MASTER_PASSWORD` | Master password (for `--passwordenv`) |
+| Variable             | Purpose                                                                    |
+| -------------------- | -------------------------------------------------------------------------- |
+| `BW_SESSION`         | Session token (from unlock)                                                |
+| `BW_CLIENTID`        | API key client ID                                                          |
+| `BW_CLIENTSECRET`    | API key client secret                                                      |
+| `BW_MASTER_PASSWORD` | Master password (for `--passwordenv`) — **unset immediately after unlock** |

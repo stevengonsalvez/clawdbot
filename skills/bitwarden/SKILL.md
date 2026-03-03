@@ -81,7 +81,7 @@ bwe_safe(){
 }
 ```
 
-Same as `bwe` but only evaluates lines matching `export VAR=value`. Anything else is silently dropped. Use on shared org accounts or untrusted environments.
+Same as `bwe` but only evaluates lines matching `export VAR=value`. Non-matching lines are silently dropped. This guards against non-export lines being injected but does **not** sanitize values — a value containing `$(cmd)` or backticks would still execute during `eval`. If someone has write access to your Bitwarden vault, you have bigger problems. Use on shared org accounts as a defence-in-depth layer.
 
 ### `bwc <name> [file]` — Create Secure Note from .env file
 
@@ -89,15 +89,17 @@ Same as `bwe` but only evaluates lines matching `export VAR=value`. Anything els
 bwc(){
     DEFAULT_FF=".env"
     FF=${2:-$DEFAULT_FF}
-    cat ${FF} | awk '{print "export " $0}' >/tmp/.xenv
-    bw get template item | jq --arg a "$(cat /tmp/.xenv)" --arg b "$1" \
+    TMPF=$(mktemp)
+    chmod 600 "$TMPF"
+    awk '{print "export " $0}' "${FF}" > "$TMPF"
+    bw get template item | jq --arg a "$(cat "$TMPF")" --arg b "$1" \
       '.type = 2 | .secureNote.type = 0 | .notes = $a | .name = $b' \
       | bw encode | bw create item
-    rm /tmp/.xenv
+    rm -f "$TMPF"
 }
 ```
 
-Takes a `.env` file (KEY=value lines), prepends `export` to each line, and creates a Bitwarden Secure Note. The note name is the first argument.
+Takes a `.env` file (KEY=value lines), prepends `export` to each line, and creates a Bitwarden Secure Note. The note name is the first argument. Uses `mktemp` with `chmod 600` to prevent other processes reading the temp file.
 
 **Example:** `bwc my-project .env.production`
 
@@ -105,11 +107,13 @@ Takes a `.env` file (KEY=value lines), prepends `export` to each line, and creat
 
 ```bash
 bwce(){
-    export | awk '{print "export " $0}' >/tmp/.env
-    bw get template item | jq --arg a "$(cat /tmp/.env)" --arg b "$1" \
+    TMPF=$(mktemp)
+    chmod 600 "$TMPF"
+    export | awk '{print "export " $0}' > "$TMPF"
+    bw get template item | jq --arg a "$(cat "$TMPF")" --arg b "$1" \
       '.type = 2 | .secureNote.type = 0 | .notes = $a | .name = $b' \
       | bw encode | bw create item
-    rm /tmp/.env
+    rm -f "$TMPF"
 }
 ```
 
@@ -151,8 +155,9 @@ alias bwg="bw get item"                               # Get full item JSON
 ### Daily use
 
 ```bash
-bwss                  # Unlock vault (once per terminal session)
-bwe agent-fleet       # Load all agent secrets
+bwss                     # Unlock vault (once per terminal session)
+bw sync                  # Pull latest from server (if secrets were updated in web vault)
+bwe agent-fleet          # Load all agent secrets
 echo $ANTHROPIC_API_KEY  # Verify — should be set
 ```
 
@@ -223,8 +228,9 @@ export DISCORD_TOKEN=MTQ3...
 - One `export KEY=value` per line
 - No comments, no blank lines (they get eval'd)
 - Keys should be `UPPER_SNAKE_CASE`
-- Values with special characters don't need quoting (they're on their own line)
-- Never put shell commands in values — use `bwe_safe` if you're paranoid
+- Values should be simple strings — no `$(...)`, backticks, or shell metacharacters (they execute during `eval`)
+- If a value contains spaces or special chars, wrap in single quotes: `export MY_KEY='value with spaces'`
+- Never put shell commands in values
 
 ## Guardrails
 
@@ -244,14 +250,18 @@ If using `bw` inside tmux (common for agents), the `BW_SESSION` env var must be 
 - Export `BW_SESSION` before creating the tmux session
 
 ```bash
-# Option 1: unlock inside tmux
+# Option 1: unlock inside tmux (preferred — interactive, no password in process list)
 tmux new-session -d -s work
 tmux send-keys -t work 'bwss' Enter
-# ... wait for unlock ...
+# ... wait for unlock prompt, enter master password ...
 tmux send-keys -t work 'bwe agent-fleet' Enter
 
-# Option 2: pass session token
-export BW_SESSION=$(bw unlock "password" --raw)
+# Option 2: pass session token via env var (non-interactive)
+# ⚠️ Never pass the master password as a CLI argument — it's visible in `ps aux`.
+# Use --passwordenv instead:
+read -s BW_MASTER_PASSWORD && export BW_MASTER_PASSWORD
+export BW_SESSION=$(bw unlock --passwordenv BW_MASTER_PASSWORD --raw)
+unset BW_MASTER_PASSWORD
 tmux new-session -d -s work -e "BW_SESSION=$BW_SESSION"
 tmux send-keys -t work 'bwe agent-fleet' Enter
 ```
