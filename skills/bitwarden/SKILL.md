@@ -91,15 +91,16 @@ bwc(){
     FF=${2:-$DEFAULT_FF}
     TMPF=$(mktemp)
     chmod 600 "$TMPF"
-    awk '{print "export " $0}' "${FF}" > "$TMPF"
-    bw get template item | jq --arg a "$(cat "$TMPF")" --arg b "$1" \
-      '.type = 2 | .secureNote.type = 0 | .notes = $a | .name = $b' \
+    # Single-quote values to prevent shell metacharacter issues during eval
+    awk -F= '{key=$1; val=substr($0,index($0,"=")+1); print "export " key "=\047" val "\047"}' "${FF}" > "$TMPF"
+    bw get template item | jq --rawfile notes "$TMPF" --arg name "$1" \
+      '.type = 2 | .secureNote.type = 0 | .notes = $notes | .name = $name' \
       | bw encode | bw create item
     rm -f "$TMPF"
 }
 ```
 
-Takes a `.env` file (KEY=value lines), prepends `export` to each line, and creates a Bitwarden Secure Note. The note name is the first argument. Uses `mktemp` with `chmod 600` to prevent other processes reading the temp file.
+Takes a `.env` file (`KEY=value` lines), wraps each value in single quotes, prepends `export`, and creates a Bitwarden Secure Note. Uses `mktemp` with `chmod 600` to prevent other processes reading the temp file. Uses `jq --rawfile` to avoid JSON escaping issues with newlines.
 
 **Example:** `bwc my-project .env.production`
 
@@ -218,18 +219,18 @@ bw list items --collectionid <id> | jq '.[] | .name'
 Each Secure Note's `notes` field contains one secret per line:
 
 ```
-export ANTHROPIC_API_KEY=sk-ant-...
-export OPENAI_API_KEY=sk-proj-...
-export DISCORD_TOKEN=MTQ3...
+export ANTHROPIC_API_KEY='sk-ant-...'
+export OPENAI_API_KEY='sk-proj-...'
+export DISCORD_TOKEN='MTQ3...'
 ```
 
 **Rules:**
 
-- One `export KEY=value` per line
+- One `export KEY='value'` per line
+- **Always single-quote values.** Unquoted values containing `|`, `!`, `#`, `$`, backticks, or other shell metacharacters will break or execute during `eval`. Single quotes prevent this.
 - No comments, no blank lines (they get eval'd)
 - Keys should be `UPPER_SNAKE_CASE`
-- Values should be simple strings — no `$(...)`, backticks, or shell metacharacters (they execute during `eval`)
-- If a value contains spaces or special chars, wrap in single quotes: `export MY_KEY='value with spaces'`
+- If a value itself contains a single quote, use `'\''` to escape it: `export KEY='value'\''s edge case'`
 - Never put shell commands in values
 
 ## Guardrails
