@@ -44,114 +44,61 @@ metadata:
 
 ## Core Concept
 
-Secrets are stored as Bitwarden **Secure Notes** with `export KEY=value` lines in the notes field.
+Secrets are stored as Bitwarden **Secure Notes** with `export KEY='value'` lines in the notes field.
 One `eval` call loads them into the current shell. No files on disk. Secrets die with the session.
 
 ## Shell Functions
 
-These functions are the primary interface. Source them in your shell profile (`.zshrc` / `.bashrc`).
+All functions ship in **`lib/bw-functions.sh`** — source it in your shell profile. No copy-pasting, no dotfiles dependency.
 
-### `bwss` — Unlock vault (session set)
-
-```bash
-bwss(){
-    eval $(bw unlock | grep export | awk -F"\$" {'print $2'})
-}
-```
-
-Unlocks the vault and exports `BW_SESSION` into the current shell. Prompts for master password interactively. Must run before any other `bw` command.
-
-### `bwe <item-name>` — Load secrets into env
+### Setup on a new machine
 
 ```bash
-bwe(){
-    eval $(bw get item $1 | jq -r '.notes')
-}
+# 1. Install bw CLI
+brew install bitwarden-cli    # macOS
+sudo snap install bw          # Ubuntu
+npm i -g @bitwarden/cli       # any OS
+
+# 2. Install skill (choose one)
+npx clawhub install bitwarden-bwe            # via ClawHub
+# or: git clone https://github.com/stevengonsalvez/clawdbot /path/to/clawdbot
+
+# 3. Source functions in your shell profile
+echo 'source /path/to/skills/bitwarden-bwe/lib/bw-functions.sh' >> ~/.bashrc
+source ~/.bashrc
+
+# 4. Login + unlock
+export BW_CLIENTID="user.xxxxx"
+export BW_CLIENTSECRET="xxxxx"
+bw login --apikey
+bwss   # unlock (prompts for master password)
+
+# 5. Verify
+bwl    # list vault items
 ```
 
-Fetches a Secure Note by name and `eval`s its contents. Each line should be `export KEY=value`.
+### What's in `lib/bw-functions.sh`
 
-**Example:** `bwe agent-fleet` loads all agent secrets into the current shell.
+| Function            | Purpose                                                                                   |
+| ------------------- | ----------------------------------------------------------------------------------------- |
+| `bwss`              | Unlock vault, set `BW_SESSION` interactively                                              |
+| `bwe <name>`        | Load secrets from Secure Note into env via `eval`                                         |
+| `bwe_safe <name>`   | Same, but only evals lines matching `export VAR=value` — defence-in-depth for shared orgs |
+| `bwc <name> [file]` | Create Secure Note from `.env` file (auto-quotes values, uses `mktemp` + `chmod 600`)     |
+| `bwce <name>`       | Create Secure Note from current shell exports                                             |
+| `bwdd <name>`       | Delete item by name                                                                       |
+| `bwl`               | Alias: list all item names                                                                |
+| `bwll <grep>`       | Alias: search item names                                                                  |
+| `bwg <name>`        | Alias: get full item JSON                                                                 |
 
-### `bwe_safe <item-name>` — Load secrets with input validation
+**Notes on `bwe_safe`:** Guards against non-export lines being injected but does **not** sanitize values — a value containing `$(cmd)` or backticks would still execute during `eval`. If someone has write access to your Bitwarden vault, you have bigger problems. Use on shared org accounts as a defence-in-depth layer.
 
-```bash
-bwe_safe(){
-    bw get item $1 | jq -r '.notes' | grep -E '^export [A-Za-z_][A-Za-z0-9_]*=.*$' | while IFS= read -r line; do eval "$line"; done
-}
-```
+## References
 
-Same as `bwe` but only evaluates lines matching `export VAR=value`. Non-matching lines are silently dropped. This guards against non-export lines being injected but does **not** sanitize values — a value containing `$(cmd)` or backticks would still execute during `eval`. If someone has write access to your Bitwarden vault, you have bigger problems. Use on shared org accounts as a defence-in-depth layer.
-
-### `bwc <name> [file]` — Create Secure Note from .env file
-
-```bash
-bwc(){
-    DEFAULT_FF=".env"
-    FF=${2:-$DEFAULT_FF}
-    TMPF=$(mktemp)
-    chmod 600 "$TMPF"
-    # Single-quote values to prevent shell metacharacter issues during eval
-    awk -F= '{key=$1; val=substr($0,index($0,"=")+1); print "export " key "=\047" val "\047"}' "${FF}" > "$TMPF"
-    bw get template item | jq --rawfile notes "$TMPF" --arg name "$1" \
-      '.type = 2 | .secureNote.type = 0 | .notes = $notes | .name = $name' \
-      | bw encode | bw create item
-    rm -f "$TMPF"
-}
-```
-
-Takes a `.env` file (`KEY=value` lines), wraps each value in single quotes, prepends `export`, and creates a Bitwarden Secure Note. Uses `mktemp` with `chmod 600` to prevent other processes reading the temp file. Uses `jq --rawfile` to avoid JSON escaping issues with newlines.
-
-**Example:** `bwc my-project .env.production`
-
-### `bwce <name>` — Create Secure Note from current shell exports
-
-```bash
-bwce(){
-    TMPF=$(mktemp)
-    chmod 600 "$TMPF"
-    export | awk '{print "export " $0}' > "$TMPF"
-    bw get template item | jq --arg a "$(cat "$TMPF")" --arg b "$1" \
-      '.type = 2 | .secureNote.type = 0 | .notes = $a | .name = $b' \
-      | bw encode | bw create item
-    rm -f "$TMPF"
-}
-```
-
-Captures all current shell exports and saves them as a Secure Note. Useful for snapshotting a working environment.
-
-### `bwdd <name>` — Delete item by name
-
-```bash
-bwdd(){
-    bw delete item $(bw get item $1 | jq .id | tr -d '"')
-}
-```
-
-### Aliases
-
-```bash
-alias bwl="bw list items | jq '.[] | .name'"        # List all item names
-alias bwll="bw list items | jq '.[] | .name' | grep" # Search item names
-alias bwg="bw get item"                               # Get full item JSON
-```
+- `lib/bw-functions.sh` — sourceable shell functions (the canonical implementation)
+- `references/cli-reference.md` — Bitwarden CLI install, auth, and common operations
 
 ## Workflow
-
-### First time on a new machine
-
-1. Install CLI: `brew install bitwarden-cli` (macOS) / `sudo snap install bw` (Ubuntu) / `npm i -g @bitwarden/cli`
-2. Verify: `bw --version`
-3. Login with API key:
-   ```bash
-   export BW_CLIENTID="user.xxxxx"
-   export BW_CLIENTSECRET="xxxxxx"
-   bw login --apikey
-   ```
-   Or interactively: `bw login <email>`
-4. Add shell functions to profile (copy `bwss`, `bwe`, `bwe_safe`, `bwc`, `bwce`, `bwdd` and aliases into `.zshrc` or `.bashrc`)
-5. Unlock: `bwss` (enter master password)
-6. Verify: `bwl` (should list your vault items)
 
 ### Daily use
 
@@ -175,7 +122,7 @@ bwce snapshot-2026-03-03
 bwdd old-note
 bwc old-note .env.updated
 
-# Or edit in web vault — notes field, one `export KEY=value` per line
+# Or edit in web vault — notes field, one `export KEY='value'` per line
 ```
 
 ### Org + Collection pattern (team/fleet use)
@@ -185,8 +132,8 @@ For sharing secrets with a machine account (e.g., GCP VM):
 1. **Create a Bitwarden Organization** (free tier = 2 users)
 2. **Create a Collection** in the org (e.g., `popa-secrets`)
 3. **Create a machine account** — separate Bitwarden account, invited to org, assigned to the collection
-4. **Add Secure Notes** to the collection with `export KEY=value` format
-5. **On the target machine:** login with machine account API key, `bwss`, `bwe <note>`
+4. **Add Secure Notes** to the collection with `export KEY='value'` format
+5. **On the target machine:** install skill, source `lib/bw-functions.sh`, login with machine account API key, `bwss`, `bwe <note>`
 
 The machine account sees ONLY items in its assigned collection. Revoke access = remove from org. One click.
 
