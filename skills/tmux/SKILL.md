@@ -224,8 +224,8 @@ echo "$OUTPUT" | grep -qE "I've completed|changes have been|PR.*created|committe
 # Error signals
 echo "$OUTPUT" | grep -qE "Error:|FATAL|panic|OOM|killed|context.*exhausted" && echo "ERROR"
 
-# Stuck signals (same error 3+ times)
-echo "$OUTPUT" | sort | uniq -c | sort -rn | head -1 | awk '$1 >= 3 {print "STUCK"}'
+# Stuck signals (same error repeating 3+ times)
+echo "$OUTPUT" | grep -iE "error|fail|fatal|panic" | sort | uniq -c | sort -rn | head -1 | awk '$1 >= 3 {print "STUCK"}'
 ```
 
 ---
@@ -263,7 +263,8 @@ tmux kill-session -t "cc-issue-${ISSUE}-${DESC}" 2>/dev/null
 Periodically check for stale sessions:
 
 ```bash
-for s in $(tmux list-sessions -F '#{session_name}' 2>/dev/null); do
+tmux list-sessions -F '#{session_name}' 2>/dev/null | while IFS= read -r s; do
+  [ -z "$s" ] && continue
   LAST_ACTIVITY=$(tmux display -t "$s" -p '#{session_activity}')
   IDLE_SECS=$(( $(date +%s) - LAST_ACTIVITY ))
   if [ $IDLE_SECS -gt 3600 ]; then
