@@ -51,6 +51,70 @@ bash command:"codex exec 'Your prompt'"
 
 ---
 
+## Multi-Tool Fallback (Default Pattern)
+
+**Always use the fallback chain.** Don't waste time debugging tool limits — switch immediately.
+
+```
+Claude Code (primary — OAuth Max subscription)
+    ↓ capped / erroring / stuck after 3 retries
+Codex CLI (secondary — no weekly cap, API tokens)
+    ↓ erroring / unavailable
+Manual flag → inbox item to @mortal
+```
+
+### Pre-Spawn Availability Check
+
+Use `scripts/coding-tool.sh` from mission-control, or check manually:
+
+```bash
+# Check what's available
+scripts/coding-tool.sh --check
+
+# Or manual check:
+claude --print "reply with OK" --dangerously-skip-permissions 2>&1 | \
+  grep -qi "rate.limit\|capped\|exceeded\|429" && echo "CC_CAPPED" || echo "CC_OK"
+```
+
+### Unified Entry Point
+
+```bash
+# One-shot with automatic fallback
+scripts/coding-tool.sh --agent cantona --worktree ~/d/git/worktrees/mc-foo "Fix the bug"
+
+# Interactive tmux with fallback
+scripts/coding-tool.sh --interactive --agent cantona --worktree ~/d/git/worktrees/mc-foo "Build the feature"
+
+# Into existing tmux session
+scripts/coding-tool.sh --interactive --tmux cc-issue-123 --agent cantona "Your task"
+```
+
+### Mid-Task Fallback
+
+If Claude Code fails mid-run (one-shot mode), `coding-tool.sh` automatically retries with Codex. For interactive/tmux mode, switch manually:
+
+```bash
+# Kill Claude Code session
+tmux kill-session -t "cc-issue-${ISSUE}"
+
+# Respawn with Codex
+tmux new-session -d -s "codex-issue-${ISSUE}" -c ${WORKTREE} \
+  'codex --yolo -m gpt-5.3-codex'
+tmux send-keys -t "codex-issue-${ISSUE}" "Read AGENTS.md first, then: <same task>" Enter
+```
+
+### When Both Fail
+
+`coding-tool.sh` creates an inbox item for `@mortal` automatically. If doing it manually:
+
+```bash
+curl -s -X POST "${CONVEX_URL}/api/inbox/send" \
+  -H "X-MC-Token: ${TOKEN}" -H "Content-Type: application/json" \
+  -d '{"targetAgent":"mortal","fromAgent":"'${AGENT}'","subject":"Coding tools unavailable","body":"Both CC and Codex failed. Task: ...","kind":"alert","priority":"high","project":"local"}'
+```
+
+---
+
 ## Quick Start: One-Shot Tasks
 
 For quick prompts/chats, create a temp git repo and run:
@@ -217,6 +281,20 @@ gh pr create --repo user/repo --head fix/issue-78 --title "fix: ..." --body "...
 git worktree remove /tmp/issue-78
 git worktree remove /tmp/issue-99
 ```
+
+---
+
+## Session Naming Convention
+
+Follow this pattern — `sync-tmux.ts` parses it for the dashboard:
+
+```
+{tool}-{scope}-{issue}[-{desc}]
+```
+
+**Examples:** `cc-issue-174-tmux-protocol`, `codex-fix-1520`, `cc-pr-186`
+
+See the **tmux** skill for full naming spec and inbox linkage with `lib/tmux-inbox.sh`.
 
 ---
 

@@ -145,6 +145,161 @@ done
 tmux send-keys -t worker-4 "Fix the bug in auth.js" Enter
 ```
 
+---
+
+## Session Naming Convention (Mandatory)
+
+All coding sessions **must** follow this naming pattern — `sync-tmux.ts` parses it to link sessions → issues → dashboard:
+
+```
+{tool}-{scope}-{issue}[-{desc}]
+```
+
+| Segment | Values                          | Example         |
+| ------- | ------------------------------- | --------------- |
+| `tool`  | `cc` (Claude Code), `codex`     | `cc`            |
+| `scope` | `issue`, `fix`, `pr`, `feature` | `issue`         |
+| `issue` | GitHub issue number             | `174`           |
+| `desc`  | Optional short slug             | `tmux-protocol` |
+
+**Examples:** `cc-issue-174-tmux-protocol`, `codex-fix-1520`, `cc-pr-186`
+
+> **Session name is the contract.** Name it wrong, it won't link to the issue on the dashboard.
+
+---
+
+## Inbox Linkage
+
+Link tmux sessions to inbox items using `lib/tmux-inbox.sh`:
+
+```bash
+source ~/d/git/mission-control/lib/tmux-inbox.sh
+
+# Start: creates tmux session + records state
+tmux_inbox_start "$INBOX_ID" "claude-code" "my-task" "$WORKTREE" "$ISSUE_NUM"
+
+# Check: captures output, detects completion/errors
+tmux_inbox_check "$INBOX_ID" "$AGENT_WORKSPACE"
+
+# Complete: marks inbox done, records result
+tmux_inbox_complete "$INBOX_ID" "$AGENT_WORKSPACE" "PR #188 created"
+
+# Cleanup: kills session + removes worktree
+tmux_inbox_cleanup "$INBOX_ID" "$AGENT_WORKSPACE"
+```
+
+---
+
+## Steering Protocol
+
+### Monitor (every 2–3 min or on heartbeat)
+
+```bash
+tmux capture-pane -t "cc-issue-${ISSUE}-${DESC}" -p | tail -50
+```
+
+| Signal                      | Action                     |
+| --------------------------- | -------------------------- |
+| Model is generating code    | Let it work                |
+| "I'll now..." planning text | Verify approach is correct |
+| Error/stack trace repeating | Intervene (steer)          |
+| Idle / waiting for input    | Check if stuck or done     |
+| "I've completed..." summary | Move to verify phase       |
+| Session has exited          | Check PR status            |
+
+### Steer (when intervention is needed)
+
+```bash
+# Correct course
+tmux send-keys -t "cc-issue-${ISSUE}" \
+  "STOP. You're going the wrong direction. <specific correction>" Enter
+
+# Unstick
+tmux send-keys -t "cc-issue-${ISSUE}" \
+  "You seem stuck. Try: <specific suggestion>" Enter
+
+# Add context
+tmux send-keys -t "cc-issue-${ISSUE}" \
+  "Additional context: <file path, pattern, constraint>" Enter
+
+# Abort
+tmux send-keys -t "cc-issue-${ISSUE}" "/exit" Enter
+```
+
+### Steering Rules
+
+1. **Be specific.** "Fix the types" is bad. "Change `costTotal` to `v.optional(v.float64())`" is good.
+2. **Don't over-steer.** Interruptions reset context. If on track, let it work.
+3. **One correction at a time.** Multiple simultaneous corrections confuse the model.
+4. **Stuck 3+ times on same issue?** Kill session, rethink approach, respawn with better prompt.
+
+---
+
+## Completion Detection
+
+Look for these patterns in `capture-pane` output to detect completion:
+
+```bash
+OUTPUT=$(tmux capture-pane -t "$SESSION" -p | tail -30)
+
+# Claude Code completion signals
+echo "$OUTPUT" | grep -qE "I've completed|changes have been|PR.*created|committed.*pushed" && echo "DONE"
+
+# Error signals
+echo "$OUTPUT" | grep -qE "Error:|FATAL|panic|OOM|killed|context.*exhausted" && echo "ERROR"
+
+# Stuck signals (same error 3+ times)
+echo "$OUTPUT" | sort | uniq -c | sort -rn | head -1 | awk '$1 >= 3 {print "STUCK"}'
+```
+
+---
+
+## Full Lifecycle: Spawn → Monitor → Steer → Verify → Cleanup
+
+```bash
+ISSUE=174; DESC="tmux-protocol"; WORKTREE=~/d/git/worktrees/mc-issue-${ISSUE}
+
+# 1. Worktree
+cd ~/d/git/mission-control && git fetch origin master
+git worktree add -b "feat/issue-${ISSUE}" "$WORKTREE" origin/master
+
+# 2. Spawn
+tmux new-session -d -s "cc-issue-${ISSUE}-${DESC}" -c "$WORKTREE" \
+  'claude --dangerously-skip-permissions'
+tmux send-keys -t "cc-issue-${ISSUE}-${DESC}" \
+  "Read AGENTS.md first, then: <task with full context>" Enter
+
+# 3. Monitor
+tmux capture-pane -t "cc-issue-${ISSUE}-${DESC}" -p | tail -50
+
+# 4. Verify
+gh pr list --repo stevengonsalvez/mission-control --head "feat/issue-${ISSUE}"
+gh pr checks ${PR_NUM} --repo stevengonsalvez/mission-control
+
+# 5. Cleanup
+git worktree remove "$WORKTREE" --force
+tmux kill-session -t "cc-issue-${ISSUE}-${DESC}" 2>/dev/null
+```
+
+---
+
+## Heartbeat Session Health Check
+
+On each heartbeat, check active sessions using the `tmux-monitor` skill:
+
+```bash
+# Quick health check — all sessions
+for s in $(tmux list-sessions -F '#{session_name}' 2>/dev/null); do
+  LAST_ACTIVITY=$(tmux display -t "$s" -p '#{session_activity}')
+  IDLE_SECS=$(( $(date +%s) - LAST_ACTIVITY ))
+  if [ $IDLE_SECS -gt 3600 ]; then
+    echo "⚠️ $s idle for ${IDLE_SECS}s — consider cleanup"
+  fi
+done
+```
+
+---
+
 ## Notes
 
 - Use `capture-pane -p` to print to stdout (essential for scripting)
